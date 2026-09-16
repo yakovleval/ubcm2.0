@@ -128,26 +128,43 @@ static void exec_compute(VM *vm) {
     BitStream *bs = proc->data;
 
     uint64_t opcode = bs_read_bits(bs, 5);
-    int src1 = read_operand(bs);
-    int src2 = read_operand(bs);
-    int dst  = read_dst(bs);   // ← используем read_dst
 
-    uint64_t v1 = vm_get_uint64(vm, src1);
-    uint64_t v2 = vm_get_uint64(vm, src2);
+    // Источник 1: адрес + размер
+    Address src1 = read_address(bs);
+    uint64_t size1 = read_variable_size(bs);
+
+    // Источник 2: адрес + размер
+    Address src2 = read_address(bs);
+    uint64_t size2 = read_variable_size(bs);
+
+    // Приёмник: только адрес (размер = размер результата)
+    Address dst = read_address(bs);
+
+    if (dst.mode == ADDR_IMMEDIATE) {
+        fprintf(stderr, "FATAL: immediate addressing not allowed for destination\n");
+        exit(1);
+    }
+
+    uint64_t v1 = read_value_sized(vm, src1, size1);
+    uint64_t v2 = read_value_sized(vm, src2, size2);
+
     uint64_t result = 0;
-
     switch (opcode) {
         case 0: result = v1 + v2; break;
         case 1: result = v1 - v2; break;
         case 2: result = v1 * v2; break;
         case 3: result = v2 ? v1 / v2 : 0; break;
-        default: result = 0;
     }
 
-    vm_set_uint64(vm, dst, result);
-    printf("[COMPUTE] op=%llu r%d = r%d + r%d = %llu\n",
-           (unsigned long long)opcode, dst, src1, src2,
-           (unsigned long long)result);
+    // Размер результата = максимальный из размеров источников
+    uint64_t result_size = size1 > size2 ? size1 : size2;
+    write_value_sized(vm, dst, result, result_size);
+
+    printf("[COMPUTE] op=%llu r%d[%llu] = %llu (size=%llu)\n",
+           (unsigned long long)opcode, dst.reg_num,
+           (unsigned long long)dst.offset,
+           (unsigned long long)result,
+           (unsigned long long)result_size);
 }
 
 // Builtin: RETURN (0x09)
