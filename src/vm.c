@@ -96,9 +96,25 @@ static Node read_node(BitStream *bs, uint64_t addr) {
     return n;
 }
 
-// Чтение операнда из процедуры (режим + 5-битный регистр)
+// Чтение источника (все режимы разрешены)
 static int read_operand(BitStream *bs) {
     uint64_t mode = bs_read_bits(bs, 2);
+    if (mode == 2) { // direct
+        return (int)bs_read_bits(bs, 5);
+    }
+    return -1;
+}
+
+// Чтение приёмника (непосредственная адресация запрещена)
+static int read_dst(BitStream *bs) {
+    size_t mode_pos = bs->pos;
+    uint64_t mode = bs_read_bits(bs, 2);
+    if (mode == 0) {
+        fprintf(stderr,
+            "FATAL: immediate addressing not allowed for destination "
+            "(bit position %zu)\n", mode_pos);
+        exit(1);
+    }
     if (mode == 2) { // direct
         return (int)bs_read_bits(bs, 5);
     }
@@ -110,16 +126,16 @@ static void exec_compute(VM *vm) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
     BitStream *bs = proc->data;
-    
+
     uint64_t opcode = bs_read_bits(bs, 5);
     int src1 = read_operand(bs);
     int src2 = read_operand(bs);
-    int dst  = read_operand(bs);
-    
+    int dst  = read_dst(bs);   // ← используем read_dst
+
     uint64_t v1 = vm_get_uint64(vm, src1);
     uint64_t v2 = vm_get_uint64(vm, src2);
     uint64_t result = 0;
-    
+
     switch (opcode) {
         case 0: result = v1 + v2; break;
         case 1: result = v1 - v2; break;
@@ -127,10 +143,11 @@ static void exec_compute(VM *vm) {
         case 3: result = v2 ? v1 / v2 : 0; break;
         default: result = 0;
     }
-    
+
     vm_set_uint64(vm, dst, result);
     printf("[COMPUTE] op=%llu r%d = r%d + r%d = %llu\n",
-           (unsigned long long)opcode, dst, src1, src2, (unsigned long long)result);
+           (unsigned long long)opcode, dst, src1, src2,
+           (unsigned long long)result);
 }
 
 // Builtin: RETURN (0x09)
