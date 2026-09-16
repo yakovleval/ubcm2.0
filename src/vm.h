@@ -14,6 +14,7 @@ typedef struct ActivationRecord {
     int proc_reg;              // регистр с процедурой
     int rs_reg;                // регистр с РС
     uint64_t rs_ptr;           // текущий узел в РС
+    uint64_t proc_pos;         // позиция в процедуре (в битах)
     struct ActivationRecord *prev;
 } ActivationRecord;
 

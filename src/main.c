@@ -10,6 +10,7 @@ int main(int argc, char **argv) {
     VM *vm = vm_create();
     vm_load_procedure(vm, 1, argv[1]);   // регистр 1 — процедура
     vm_load_rs(vm, 2, argv[2]);          // регистр 2 — РС
+    vm_load_procedure(vm, 5, argv[3]);   // подпроцедура
     
     // Тестовые операнды: r10 = 5, r11 = 7
     vm_set_uint64(vm, 10, 5);
