@@ -10,11 +10,19 @@ typedef struct {
     BitStream *data;
 } Register;
 
+typedef enum {
+    AR_NOP,      // AR не меняется (COMPUTE, EXIT)
+    AR_CALL,     // создана новая AR (0110, 0111, 1000)
+    AR_RETURN    // AR снята (1001)
+} ArAction;
+
 typedef struct ActivationRecord {
     int proc_reg;              // регистр с процедурой
     int rs_reg;                // регистр с РС
     uint64_t rs_ptr;           // текущий узел в РС
     uint64_t proc_pos;         // позиция в процедуре (в битах)
+    int shares_rs;    // 0110: делим rs_ptr с caller
+    int shares_proc;  // 0111: делим proc_pos с caller
     struct ActivationRecord *prev;
 } ActivationRecord;
 

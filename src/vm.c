@@ -98,35 +98,28 @@ static Node read_node(BitStream *bs, uint64_t addr) {
 }
 
 // Builtin: COMPUTE (0x04)
-static void exec_compute(VM *vm) {
+static ArAction exec_compute(VM *vm) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
     BitStream *bs = proc->data;
     bs_seek(bs, ar->proc_pos);
 
     uint64_t opcode = bs_read_bits(bs, 5);
-
-    // Источник 1: адрес + размер
     Address src1 = read_address(bs);
     uint64_t size1 = read_variable_size(bs);
-
-    // Источник 2: адрес + размер
     Address src2 = read_address(bs);
     uint64_t size2 = read_variable_size(bs);
-
-    // Приёмник: только адрес (размер = размер результата)
-    Address dst = read_address(bs);
+    Address dst  = read_address(bs);
+    ar->proc_pos = bs->pos;
 
     if (dst.mode == ADDR_IMMEDIATE) {
-        fprintf(stderr, "FATAL: immediate addressing not allowed for destination\n");
+        fprintf(stderr, "FATAL: immediate for dst (pos %llu)\n",
+                (unsigned long long)ar->proc_pos);
         exit(1);
     }
 
-    ar->proc_pos = bs->pos;
-
     uint64_t v1 = read_value_sized(vm, src1, size1);
     uint64_t v2 = read_value_sized(vm, src2, size2);
-
     uint64_t result = 0;
     switch (opcode) {
         case 0: result = v1 + v2; break;
@@ -134,90 +127,96 @@ static void exec_compute(VM *vm) {
         case 2: result = v1 * v2; break;
         case 3: result = v2 ? v1 / v2 : 0; break;
     }
-
-    // Размер результата = максимальный из размеров источников
-    uint64_t result_size = size1 > size2 ? size1 : size2;
-    write_value_sized(vm, dst, result, result_size);
-
+    uint64_t rsize = size1 > size2 ? size1 : size2;
+    write_value_sized(vm, dst, result, rsize);
     printf("[COMPUTE] op=%llu r%d[%llu] = %llu (size=%llu)\n",
            (unsigned long long)opcode, dst.reg_num,
            (unsigned long long)dst.offset,
-           (unsigned long long)result,
-           (unsigned long long)result_size);
+           (unsigned long long)result, (unsigned long long)rsize);
+    return AR_NOP;
 }
 
 // 0110: новая процедура, та же РС
-static void exec_call_new_proc(VM *vm) {
+static ArAction exec_call_new_proc(VM *vm, uint64_t next0) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
     BitStream *bs = proc->data;
     bs_seek(bs, ar->proc_pos);
 
     Address src = read_address(bs);
-    int new_proc_reg = src.reg_num;
     ar->proc_pos = bs->pos;
+    ar->rs_ptr   = next0;   // caller продолжит отсюда (перезапишется, если shares_rs)
 
-    ActivationRecord *new_ar = calloc(1, sizeof(ActivationRecord));
-    new_ar->proc_reg = new_proc_reg;
-    new_ar->rs_reg   = ar->rs_reg;   // та же РС
-    new_ar->rs_ptr   = ar->rs_ptr;    // тот же узел
-    new_ar->proc_pos = 0;
-    new_ar->prev     = ar;
-    vm->current_ar   = new_ar;
+    ActivationRecord *n = calloc(1, sizeof(ActivationRecord));
+    n->proc_reg    = src.reg_num;
+    n->rs_reg      = ar->rs_reg;
+    n->rs_ptr      = next0;   // callee стартует с того же узла
+    n->proc_pos    = 0;
+    n->shares_rs   = 1;
+    n->shares_proc = 0;
+    n->prev        = ar;
+    vm->current_ar = n;
 
-    printf("[CALL] 0110: proc_reg=%d, same RS\n", new_proc_reg);
+    printf("[CALL 0110] proc_reg=%d\n", src.reg_num);
+    return AR_CALL;
 }
 
 // 0111: та же процедура, новая РС
-static void exec_call_new_rs(VM *vm) {
+static ArAction exec_call_new_rs(VM *vm, uint64_t next0) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
     BitStream *bs = proc->data;
     bs_seek(bs, ar->proc_pos);
 
-    Address src = read_address(bs);     // адрес указателя на вход РС
+    Address src = read_address(bs);
     uint64_t entry = read_by_address(vm, src);
     ar->proc_pos = bs->pos;
+    ar->rs_ptr   = next0;
 
-    ActivationRecord *new_ar = calloc(1, sizeof(ActivationRecord));
-    new_ar->proc_reg = ar->proc_reg;     // та же процедура
-    new_ar->rs_reg   = src.reg_num;      // новая РС из адреса
-    new_ar->rs_ptr   = entry;            // вход новой РС
-    new_ar->proc_pos = ar->proc_pos;
-    new_ar->prev     = ar;
-    vm->current_ar   = new_ar;
+    ActivationRecord *n = calloc(1, sizeof(ActivationRecord));
+    n->proc_reg    = ar->proc_reg;
+    n->rs_reg      = ar->rs_reg;
+    n->rs_ptr      = entry;
+    n->proc_pos    = ar->proc_pos;   // продолжаем ту же процедуру
+    n->shares_rs   = 0;
+    n->shares_proc = 1;
+    n->prev        = ar;
+    vm->current_ar = n;
 
-    printf("[CALL] 0111: new RS reg=%d, entry=%llu\n",
-           src.reg_num, (unsigned long long)entry);
+    printf("[CALL 0111] entry=%llu\n", (unsigned long long)entry);
+    return AR_CALL;
 }
 
 // 1000: новая процедура + новая РС
-static void exec_call_new_both(VM *vm) {
+static ArAction exec_call_new_both(VM *vm, uint64_t next0) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
     BitStream *bs = proc->data;
     bs_seek(bs, ar->proc_pos);
 
-    Address src_proc = read_address(bs);   // регистр с процедурой
-    Address src_rs   = read_address(bs);   // регистр с точкой входа РС
-    uint64_t entry = read_by_address(vm, src_rs);
+    Address src_proc = read_address(bs);
+    Address src_rs   = read_address(bs);
     ar->proc_pos = bs->pos;
+    ar->rs_ptr   = next0;
 
-    ActivationRecord *new_ar = calloc(1, sizeof(ActivationRecord));
-    new_ar->proc_reg = src_proc.reg_num;
-    new_ar->rs_reg   = src_rs.reg_num;
-    new_ar->rs_ptr   = entry;
-    new_ar->proc_pos = 0;
-    new_ar->prev     = ar;
-    vm->current_ar   = new_ar;
+    ActivationRecord *n = calloc(1, sizeof(ActivationRecord));
+    n->proc_reg    = src_proc.reg_num;
+    n->rs_reg      = src_rs.reg_num;
+    n->rs_ptr      = src_rs.offset;
+    n->proc_pos    = 0;
+    n->shares_rs   = 0;
+    n->shares_proc = 0;
+    n->prev        = ar;
+    vm->current_ar = n;
 
-    printf("[CALL] 1000: proc_reg=%d, rs_reg=%d, entry=%llu\n",
+    printf("[CALL 1000] proc=%d, rs=%d, entry=%llu\n",
            src_proc.reg_num, src_rs.reg_num,
-           (unsigned long long)entry);
+           (unsigned long long)src_rs.offset);
+    return AR_CALL;
 }
 
 // Builtin: RETURN (0x09)
-static void exec_return(VM *vm) {
+static ArAction exec_return(VM *vm) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
     BitStream *bs = proc->data;
@@ -226,36 +225,40 @@ static void exec_return(VM *vm) {
     Address src = read_address(bs);
     uint64_t size = read_variable_size(bs);
     uint64_t val = read_value_sized(vm, src, size);
-
-    printf("[RETURN] r%d = %llu (size=%llu)\n",
-           src.reg_num, (unsigned long long)val, (unsigned long long)size);
-
-    if (ar->prev) {
-        vm->current_ar = ar->prev;
-    } else {
-        vm->halted = 1;
-    }
-
     ar->proc_pos = bs->pos;
+
+    printf("[RETURN] val=%llu\n", (unsigned long long)val);
+
+    if (!ar->prev) { vm->halted = 1; return AR_RETURN; }
+
+    ActivationRecord *caller = ar->prev;
+    if (ar->shares_rs)   caller->rs_ptr   = ar->rs_ptr;
+    if (ar->shares_proc) caller->proc_pos = ar->proc_pos;
+
+    vm->current_ar = caller;
+    free(ar);
+    return AR_RETURN;
 }
 
 // Builtin: EXIT (0x0B)
-static void exec_exit(VM *vm) {
+static ArAction exec_exit(VM *vm) {
     printf("[EXIT] Halted.\n");
     vm->halted = 1;
+    return AR_NOP;
 }
 
-static void exec_builtin(VM *vm, uint16_t cmd) {
+static ArAction exec_builtin(VM *vm, uint16_t cmd, uint64_t next0) {
     switch (cmd) {
-        case 0x04: exec_compute(vm);        break;
-        case 0x06: exec_call_new_proc(vm);  break;
-        case 0x07: exec_call_new_rs(vm);    break;
-        case 0x08: exec_call_new_both(vm);  break;
-        case 0x09: exec_return(vm);         break;
-        case 0x0B: exec_exit(vm);           break;
+        case 0x04: return exec_compute(vm);
+        case 0x06: return exec_call_new_proc(vm, next0);
+        case 0x07: return exec_call_new_rs(vm, next0);
+        case 0x08: return exec_call_new_both(vm, next0);
+        case 0x09: return exec_return(vm);
+        case 0x0B: return exec_exit(vm);
         default:
             fprintf(stderr, "FATAL: unknown builtin 0x%X\n", cmd);
             vm->halted = 1;
+            return AR_NOP;
     }
 }
 
@@ -274,30 +277,41 @@ void vm_step(VM *vm) {
     if (vm->halted) return;
     ActivationRecord *ar = vm->current_ar;
     if (!ar) { vm->halted = 1; return; }
-    
+
     Register *rs = vm_get_register(vm, ar->rs_reg);
     Node node = read_node(rs->data, ar->rs_ptr);
-    
-    if (node.type == 0) {
-        if (node.data == 0x03) {
-            // CHOICE: читаем 1 бит из процедуры
-            Register *proc = vm_get_register(vm, ar->proc_reg);
-	    bs_seek(proc->data, ar->proc_pos);
-            uint64_t bit = bs_read_bits(proc->data, 1);
-	    ar->proc_pos = proc->data->pos;
-            ar->rs_ptr = bit ? node.next1 : node.next0;
-        } else {
-	    ActivationRecord *old_ar = ar;
-            exec_builtin(vm, node.data);
-	    
-	    if (vm->halted) return;
 
-	    if (old_ar->prev == vm->current_ar) {
-		free(old_ar);
-	    } 
+    if (node.type != 0) {
+        fprintf(stderr, "FATAL: node type %d not implemented\n", node.type);
+        vm->halted = 1;
+        return;
+    }
 
-	    vm->current_ar->rs_ptr = node.next0;
-        }
+    // CHOICE — обрабатываем отдельно (не в exec_builtin)
+    if (node.data == 0x03) {
+        Register *proc = vm_get_register(vm, ar->proc_reg);
+        bs_seek(proc->data, ar->proc_pos);
+        uint64_t bit = bs_read_bits(proc->data, 1);
+        ar->proc_pos = proc->data->pos;
+        ar->rs_ptr = bit ? node.next1 : node.next0;
+        return;
+    }
+
+    ActivationRecord *old_ar = ar;
+    ArAction action = exec_builtin(vm, node.data, node.next0);
+    if (vm->halted) return;
+
+    switch (action) {
+        case AR_NOP:
+            // COMPUTE / EXIT: просто двигаем узел
+            old_ar->rs_ptr = node.next0;
+            break;
+        case AR_CALL:
+            // CALL: caller->rs_ptr и callee уже настроены внутри
+            break;
+        case AR_RETURN:
+            // RETURN: caller уже переключён внутри
+            break;
     }
 }
 
