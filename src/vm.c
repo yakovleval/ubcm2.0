@@ -1,4 +1,5 @@
 #include "vm.h"
+#include "encoding.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -96,31 +97,6 @@ static Node read_node(BitStream *bs, uint64_t addr) {
     return n;
 }
 
-// Чтение источника (все режимы разрешены)
-static int read_operand(BitStream *bs) {
-    uint64_t mode = bs_read_bits(bs, 2);
-    if (mode == 2) { // direct
-        return (int)bs_read_bits(bs, 5);
-    }
-    return -1;
-}
-
-// Чтение приёмника (непосредственная адресация запрещена)
-static int read_dst(BitStream *bs) {
-    size_t mode_pos = bs->pos;
-    uint64_t mode = bs_read_bits(bs, 2);
-    if (mode == 0) {
-        fprintf(stderr,
-            "FATAL: immediate addressing not allowed for destination "
-            "(bit position %zu)\n", mode_pos);
-        exit(1);
-    }
-    if (mode == 2) { // direct
-        return (int)bs_read_bits(bs, 5);
-    }
-    return -1;
-}
-
 // Builtin: COMPUTE (0x04)
 static void exec_compute(VM *vm) {
     ActivationRecord *ar = vm->current_ar;
@@ -171,10 +147,15 @@ static void exec_compute(VM *vm) {
 static void exec_return(VM *vm) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
-    int src = read_operand(proc->data);
-    uint64_t val = vm_get_uint64(vm, src);
-    printf("[RETURN] r%d = %llu\n", src, (unsigned long long)val);
-    
+    BitStream *bs = proc->data;
+
+    Address src = read_address(bs);
+    uint64_t size = read_variable_size(bs);
+    uint64_t val = read_value_sized(vm, src, size);
+
+    printf("[RETURN] r%d = %llu (size=%llu)\n",
+           src.reg_num, (unsigned long long)val, (unsigned long long)size);
+
     if (ar->prev) {
         vm->current_ar = ar->prev;
         free(ar);

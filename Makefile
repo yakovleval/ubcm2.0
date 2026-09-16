@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -g
-SRC = src/main.c src/vm.c src/bitstream.c
+SRC = src/main.c src/vm.c src/bitstream.c src/encoding.c
 TARGET = ubcm
 
 BUILD_DIR = build

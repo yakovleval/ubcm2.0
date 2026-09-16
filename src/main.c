@@ -14,6 +14,7 @@ int main(int argc, char **argv) {
     // Тестовые операнды: r10 = 5, r11 = 7
     vm_set_uint64(vm, 10, 5);
     vm_set_uint64(vm, 11, 7);
+    vm_create_register(vm, 12, 64);
     
     vm_start(vm, 1, 2);
     vm_run(vm);

@@ -172,9 +172,8 @@ uint64_t read_int(BitStream *bs) {
     uint64_t size_bits = read_variable_size(bs);
     if (size_bits > 64) {
 	fprintf(stderr,
-            "FATAL: integer > 64 bits not supported (%llu bits, "
-            "bit position %zu)\n",
-            (unsigned long long)size_bits, start_pos);
+            "FATAL: integer > 64 bits not supported (%llu bits)\n",
+            (unsigned long long)size_bits);
         exit(1);
     }
     if (size_bits == 0) return 0;
