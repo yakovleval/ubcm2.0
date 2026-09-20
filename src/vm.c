@@ -270,8 +270,8 @@ static ArAction exec_call_new_both(VM *vm, uint64_t next0) {
     return AR_CALL;
 }
 
-// Builtin: RETURN (0x09)
-static ArAction exec_return(VM *vm, uint64_t next0) {
+// Builtin: RETURN RESULT (0x09)
+static ArAction exec_return_result(VM *vm) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
     BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
@@ -279,19 +279,17 @@ static ArAction exec_return(VM *vm, uint64_t next0) {
     Range src = read_source(&cursor);
     ar->proc_pos = cursor.pos;
     uint64_t val = read_range(vm, src, ar->proc_pos);
-    printf("[RETURN] val=%llu\n", (unsigned long long)val);
+    printf("[RETURN RESULT] val=%llu\n", (unsigned long long)val);
 
-    if (!ar->prev) { vm->halted = 1; return AR_RETURN; }
+    if (ar->prev) {
+        ar->prev->has_result = 1;
+        ar->prev->result_value = val;
+    } else {
+        vm->has_result = 1;
+        vm->result_value = val;
+    }
 
-    ActivationRecord *caller = ar->prev;
-    caller->has_result = 1;
-    caller->result_value = val;
-
-    if (ar->shares_rs)   caller->rs_ptr   = next0;
-    if (ar->shares_proc) caller->proc_pos = ar->proc_pos;
-
-    vm->current_ar = caller;
-    return AR_RETURN;
+    return AR_NOP;
 }
 
 // Builtin: RESIZE (0x0C)
@@ -329,11 +327,25 @@ static ArAction exec_resize(VM *vm) {
     return AR_NOP;
 }
 
-// Builtin: EXIT (0x0B)
-static ArAction exec_exit(VM *vm) {
-    printf("[EXIT] Halted.\n");
-    vm->halted = 1;
-    return AR_NOP;
+// Builtin: END CALL (0x0B)
+static ArAction exec_end_call(VM *vm, uint64_t next0) {
+    ActivationRecord *ar = vm->current_ar;
+
+    if (!ar->prev) {
+        vm->current_ar = NULL;
+        vm->halted = 1;
+        printf("[EXIT] Halted.\n");
+        return AR_POP;
+    }
+
+    ActivationRecord *caller = ar->prev;
+    if (ar->shares_rs)
+        caller->rs_ptr = next0;
+    if (ar->shares_proc)
+        caller->proc_pos = ar->proc_pos;
+
+    vm->current_ar = caller;
+    return AR_POP;
 }
 
 static ArAction exec_builtin(VM *vm, uint16_t cmd, uint64_t next0) {
@@ -343,8 +355,8 @@ static ArAction exec_builtin(VM *vm, uint16_t cmd, uint64_t next0) {
         case 0x06: return exec_call_new_proc(vm, next0);
         case 0x07: return exec_call_new_rs(vm, next0);
         case 0x08: return exec_call_new_both(vm, next0);
-        case 0x09: return exec_return(vm, next0);
-        case 0x0B: return exec_exit(vm);
+        case 0x09: return exec_return_result(vm);
+        case 0x0B: return exec_end_call(vm, next0);
         case 0x0C: return exec_resize(vm);
         default:
             fprintf(stderr, "FATAL: unknown builtin 0x%X\n", cmd);
@@ -361,6 +373,8 @@ void vm_start(VM *vm, int proc_reg, int rs_reg) {
     ar->proc_pos = 0;
     ar->prev = NULL;
     vm->current_ar = ar;
+    vm->has_result = 0;
+    vm->result_value = 0;
     vm->halted = 0;
 }
 
@@ -390,18 +404,17 @@ void vm_step(VM *vm) {
 
     ActivationRecord *old_ar = ar;
     ArAction action = exec_builtin(vm, node.data, node.next0);
-    if (vm->halted) return;
 
     switch (action) {
         case AR_NOP:
-            // COMPUTE / EXIT: просто двигаем узел
-            old_ar->rs_ptr = node.next0;
+            if (!vm->halted)
+                old_ar->rs_ptr = node.next0;
             break;
         case AR_CALL:
             // CALL: caller->rs_ptr и callee уже настроены внутри
             break;
-        case AR_RETURN:
-            // RETURN: caller уже переключён внутри
+        case AR_POP:
+            // END CALL: caller уже переключён внутри
             free(old_ar);
             break;
     }

@@ -11,9 +11,9 @@ typedef struct {
 } Register;
 
 typedef enum {
-    AR_NOP,      // AR не меняется (COMPUTE, EXIT)
+    AR_NOP,      // AR не меняется
     AR_CALL,     // создана новая AR (0110, 0111, 1000)
-    AR_RETURN    // AR снята (1001)
+    AR_POP       // AR снята (1011)
 } ArAction;
 
 typedef struct ActivationRecord {
@@ -31,6 +31,8 @@ typedef struct ActivationRecord {
 typedef struct {
     Register *registers[MAX_REGISTERS];
     ActivationRecord *current_ar;
+    uint64_t result_value;
+    int has_result;
     int halted;
 } VM;
 

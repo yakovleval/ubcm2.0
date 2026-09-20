@@ -115,7 +115,7 @@ def write_case(name, program, network):
 def generate_call_new_procedure_0110():
     program = procedure_with_subroutine(
         lambda offset: "0110" + direct_address(1, offset) + "1011",
-        return_immediate(11),
+        return_immediate(11) + "1011",
     )
     network = build_network({"0110": 0x06, "1001": 0x09, "1011": 0x0B})
     write_case("call_new_procedure_0110", program, network)
@@ -128,6 +128,7 @@ def generate_call_new_network_0111():
             "0111"
             + direct_address(1, entry_offset)
             + return_immediate(17)
+            + "1011"
             + "1011"
         )
         new_offset = len(body)
@@ -146,7 +147,12 @@ def generate_call_new_network_0111():
 
 
 def generate_call_new_procedure_and_network_1000():
-    procedure = return_immediate(17) + return_immediate(23)
+    procedure = (
+        return_immediate(17)
+        + "1011"
+        + immediate(23)
+        + "1011"
+    )
     procedure_offset = 0
     for _ in range(8):
         bootstrap = (
@@ -171,7 +177,7 @@ def generate_call_new_procedure_and_network_1000():
         0,
         {"0110": 0x06, "1000": 0x08, "1001": 0x09, "1011": 0x0B},
     )
-    alternative_name = return_immediate(17) + "1001"
+    alternative_name = return_immediate(17) + "1011"
     add_exact_path(nodes, 31, alternative_name, 0x09, 58)
     network = b"".join(node.to_bytes(8, "big") for node in nodes)
     write_case("call_new_procedure_and_network_1000", program, network)
@@ -188,6 +194,12 @@ def generate_resize_register_1100():
     )
     network = build_network({"1011": 0x0B, "1100": 0x0C})
     write_case("resize_register_1100", program, network)
+
+
+def generate_return_result_1001():
+    program = return_immediate(42) + "1011"
+    network = build_network({"1001": 0x09, "1011": 0x0B})
+    write_case("return_result_1001", program, network)
 
 
 def generate_copy_value_0101():
@@ -207,6 +219,7 @@ def main():
     generate_call_new_network_0111()
     generate_call_new_procedure_and_network_1000()
     generate_resize_register_1100()
+    generate_return_result_1001()
     generate_copy_value_0101()
 
 

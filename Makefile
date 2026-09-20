@@ -13,7 +13,8 @@ RELEASE_DIR = release
 DEBUG_OBJ = $(patsubst src/%.c,$(DEBUG_DIR)/%.o,$(SRC))
 RELEASE_OBJ = $(patsubst src/%.c,$(RELEASE_DIR)/%.o,$(SRC))
 TEST_CASES = call_new_procedure_0110 call_new_network_0111 \
-	call_new_procedure_and_network_1000 resize_register_1100 copy_value_0101
+	call_new_procedure_and_network_1000 resize_register_1100 \
+	return_result_1001 copy_value_0101
 TEST_FIXTURES = $(foreach case,$(TEST_CASES),\
 	tests/$(case).ubc tests/$(case).rn)
 TEST_OBJ = $(DEBUG_DIR)/test_integration.o

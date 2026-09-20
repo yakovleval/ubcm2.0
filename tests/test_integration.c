@@ -75,6 +75,11 @@ int main(int argc, char **argv) {
         if (result_count != 0)
             fail(case_name, "RESIZE unexpectedly returned a CALL result");
         check_resize(vm, case_name);
+    } else if (strcmp(case_name, "return_result_1001") == 0) {
+        if (result_count != 0)
+            fail(case_name, "root result appeared as a CALL result");
+        if (!vm->has_result || vm->result_value != 42)
+            fail(case_name, "root procedure returned an unexpected result");
     } else if (strcmp(case_name, "copy_value_0101") == 0) {
         if (result_count != 0)
             fail(case_name, "COPY unexpectedly returned a CALL result");
