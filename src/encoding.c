@@ -3,6 +3,40 @@
 #include <stdlib.h>
 #include <string.h>
 
+Range read_source(BitStream *bs) {
+    Range r = {0};
+    r.addr = read_address(bs);
+    if (r.addr.mode != ADDR_IMMEDIATE)
+        r.size = read_variable_size(bs);
+    return r;
+}
+
+uint64_t read_range(VM *vm, Range r) {
+    if (r.addr.mode == ADDR_IMMEDIATE)
+        return r.addr.imm;
+
+    Register *reg = vm_get_register(vm, r.addr.reg_num);
+    if (!reg) { fprintf(stderr, "FATAL: reg %d not found\n", r.addr.reg_num); exit(1); }
+    if (r.addr.offset + r.size > reg->data->size * 8) {
+        fprintf(stderr, "FATAL: read out of bounds\n"); exit(1);
+    }
+    bs_seek(reg->data, r.addr.offset);
+    return bs_read_bits(reg->data, (int)r.size);
+}
+
+void write_range(VM *vm, Address dst, uint64_t value, uint64_t size) {
+    if (dst.mode == ADDR_IMMEDIATE) {
+        fprintf(stderr, "FATAL: cannot write to immediate\n"); exit(1);
+    }
+    Register *reg = vm_get_register(vm, dst.reg_num);
+    if (!reg) { fprintf(stderr, "FATAL: reg %d not found\n", dst.reg_num); exit(1); }
+    if (dst.offset + size > reg->data->size * 8) {
+        fprintf(stderr, "FATAL: write out of bounds\n"); exit(1);
+    }
+    bs_seek(reg->data, dst.offset);
+    bs_write_bits(reg->data, value, (int)size);
+}
+
 uint64_t read_value_sized(VM *vm, Address addr, uint64_t size_bits) {
     if (size_bits == 0) return 0;
     if (size_bits > 64) {
@@ -87,7 +121,8 @@ Address read_address(BitStream *bs) {
 
     switch (addr.mode) {
         case ADDR_IMMEDIATE:
-            addr.imm = read_variable_size(bs);
+            addr.imm_size = read_variable_size(bs);
+	    addr.imm      = bs_read_bits(bs, (int)addr.imm_size);
             break;
 
         case ADDR_DIRECT:

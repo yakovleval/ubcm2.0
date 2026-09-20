@@ -105,21 +105,17 @@ static ArAction exec_compute(VM *vm) {
     bs_seek(bs, ar->proc_pos);
 
     uint64_t opcode = bs_read_bits(bs, 5);
-    Address src1 = read_address(bs);
-    uint64_t size1 = read_variable_size(bs);
-    Address src2 = read_address(bs);
-    uint64_t size2 = read_variable_size(bs);
-    Address dst  = read_address(bs);
+    Range src1 = read_source(bs);
+    Range src2 = read_source(bs);
+    Address dst = read_address(bs);   // приёмник — без размера
     ar->proc_pos = bs->pos;
 
     if (dst.mode == ADDR_IMMEDIATE) {
-        fprintf(stderr, "FATAL: immediate for dst (pos %llu)\n",
-                (unsigned long long)ar->proc_pos);
-        exit(1);
+        fprintf(stderr, "FATAL: immediate for dst\n"); exit(1);
     }
 
-    uint64_t v1 = read_value_sized(vm, src1, size1);
-    uint64_t v2 = read_value_sized(vm, src2, size2);
+    uint64_t v1 = read_range(vm, src1);
+    uint64_t v2 = read_range(vm, src2);
     uint64_t result = 0;
     switch (opcode) {
         case 0: result = v1 + v2; break;
@@ -127,9 +123,11 @@ static ArAction exec_compute(VM *vm) {
         case 2: result = v1 * v2; break;
         case 3: result = v2 ? v1 / v2 : 0; break;
     }
-    uint64_t rsize = size1 > size2 ? size1 : size2;
-    write_value_sized(vm, dst, result, rsize);
-    printf("[COMPUTE] op=%llu r%d[%llu] = %llu (size=%llu)\n",
+
+    uint64_t rsize = src1.size > src2.size ? src1.size : src2.size;
+    write_range(vm, dst, result, rsize);
+
+    printf("[COMPUTE] op=%llu -> reg%d[%llu] = %llu (size=%llu)\n",
            (unsigned long long)opcode, dst.reg_num,
            (unsigned long long)dst.offset,
            (unsigned long long)result, (unsigned long long)rsize);
@@ -151,7 +149,7 @@ static ArAction exec_call_new_proc(VM *vm, uint64_t next0) {
     n->proc_reg    = src.reg_num;
     n->rs_reg      = ar->rs_reg;
     n->rs_ptr      = next0;   // callee стартует с того же узла
-    n->proc_pos    = 0;
+    n->proc_pos    = src.offset;
     n->shares_rs   = 1;
     n->shares_proc = 0;
     n->prev        = ar;
@@ -203,7 +201,7 @@ static ArAction exec_call_new_both(VM *vm, uint64_t next0) {
     n->proc_reg    = src_proc.reg_num;
     n->rs_reg      = src_rs.reg_num;
     n->rs_ptr      = src_rs.offset;
-    n->proc_pos    = 0;
+    n->proc_pos    = src_proc.offset;
     n->shares_rs   = 0;
     n->shares_proc = 0;
     n->prev        = ar;
@@ -216,27 +214,28 @@ static ArAction exec_call_new_both(VM *vm, uint64_t next0) {
 }
 
 // Builtin: RETURN (0x09)
-static ArAction exec_return(VM *vm) {
+static ArAction exec_return(VM *vm, uint64_t next0) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
     BitStream *bs = proc->data;
     bs_seek(bs, ar->proc_pos);
 
-    Address src = read_address(bs);
-    uint64_t size = read_variable_size(bs);
-    uint64_t val = read_value_sized(vm, src, size);
+    printf("[DEBUG] proc_reg=%llu, proc_pos=%llu\n", (unsigned long long)ar->proc_reg, (unsigned long long)ar->proc_pos); 
+    Range src = read_source(bs);
     ar->proc_pos = bs->pos;
-
+    uint64_t val = read_range(vm, src);
     printf("[RETURN] val=%llu\n", (unsigned long long)val);
 
     if (!ar->prev) { vm->halted = 1; return AR_RETURN; }
 
     ActivationRecord *caller = ar->prev;
-    if (ar->shares_rs)   caller->rs_ptr   = ar->rs_ptr;
+    caller->has_result = 1;
+    caller->result_value = val;
+
+    if (ar->shares_rs)   caller->rs_ptr   = next0;
     if (ar->shares_proc) caller->proc_pos = ar->proc_pos;
 
     vm->current_ar = caller;
-    free(ar);
     return AR_RETURN;
 }
 
@@ -253,7 +252,7 @@ static ArAction exec_builtin(VM *vm, uint16_t cmd, uint64_t next0) {
         case 0x06: return exec_call_new_proc(vm, next0);
         case 0x07: return exec_call_new_rs(vm, next0);
         case 0x08: return exec_call_new_both(vm, next0);
-        case 0x09: return exec_return(vm);
+        case 0x09: return exec_return(vm, next0);
         case 0x0B: return exec_exit(vm);
         default:
             fprintf(stderr, "FATAL: unknown builtin 0x%X\n", cmd);
@@ -311,6 +310,7 @@ void vm_step(VM *vm) {
             break;
         case AR_RETURN:
             // RETURN: caller уже переключён внутри
+            free(old_ar);
             break;
     }
 }

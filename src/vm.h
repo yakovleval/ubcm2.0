@@ -17,6 +17,8 @@ typedef enum {
 } ArAction;
 
 typedef struct ActivationRecord {
+    uint64_t result_value;
+    int has_result;
     int proc_reg;              // регистр с процедурой
     int rs_reg;                // регистр с РС
     uint64_t rs_ptr;           // текущий узел в РС

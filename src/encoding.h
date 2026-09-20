@@ -22,12 +22,22 @@
 #define VALUE_FLOAT    1
 
 typedef struct {
-    uint8_t  mode;       // ADDR_*
-    uint8_t  reg_class;  // REG_*
+    uint8_t  mode;
+    uint8_t  reg_class;
     uint8_t  reg_num;
-    uint64_t offset;     // смещение в битах
-    uint64_t imm;        // для immediate
+    uint64_t offset;
+    uint64_t imm;
+    uint64_t imm_size;   // ← размер immediate в битах
 } Address;
+
+typedef struct {
+    Address  addr;
+    uint64_t size;       // размер диапазона (0 для immediate)
+} Range;
+
+Range    read_source(BitStream *bs);
+uint64_t read_range(VM *vm, Range r);
+void     write_range(VM *vm, Address dst, uint64_t value, uint64_t size);
 
 typedef struct {
     uint8_t  type;       // VALUE_INT / VALUE_FLOAT

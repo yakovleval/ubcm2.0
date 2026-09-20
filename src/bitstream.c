@@ -16,9 +16,13 @@ void bs_free(BitStream *bs) {
 }
 
 uint64_t bs_read_bits(BitStream *bs, int n) {
-   if (n > 64) {
-       fprintf(stderr, "FATAL: read_bits: n=%d > 64\n", n);
-       exit(1);
+    if (n > 64) {
+        fprintf(stderr, "FATAL: read_bits: n=%d > 64\n", n);
+        exit(1);
+    }
+    if (bs->pos + n > bs->size * 8) {
+        fprintf(stderr, "FATAL: read out of bounds at pos=%zu n=%d\n", bs->pos, n);
+        exit(1);
     }
     uint64_t value = 0;
     for (int i = 0; i < n; i++) {

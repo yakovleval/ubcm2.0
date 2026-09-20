@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -Werror -std=c11 -g
+CFLAGS = -g -O0 -fsanitize=address,undefined -Wall -Wextra -Werror -std=c11 -g
 SRC = src/main.c src/vm.c src/bitstream.c src/encoding.c
 TARGET = ubcm
 
@@ -17,5 +17,7 @@ $(BUILD_DIR)/%.o: src/%.c
 
 clean:
 	rm -rf $(BUILD_DIR)
+	rm -f *.ubc
+	rm -f *.rs
 
 .PHONY: all clean
