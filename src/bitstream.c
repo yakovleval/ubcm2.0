@@ -4,7 +4,8 @@
 
 BitStream *bs_create(size_t size_bits) {
     BitStream *bs = malloc(sizeof(BitStream));
-    bs->size = (size_bits + 7) / 8;
+    bs->size = size_bits / 8 + (size_bits % 8 != 0);
+    bs->size_bits = size_bits;
     bs->data = calloc(bs->size, 1);
     bs->pos = 0;
     return bs;
@@ -16,11 +17,11 @@ void bs_free(BitStream *bs) {
 }
 
 uint64_t bs_read_bits(BitStream *bs, int n) {
-    if (n > 64) {
-        fprintf(stderr, "FATAL: read_bits: n=%d > 64\n", n);
+    if (n < 0 || n > 64) {
+        fprintf(stderr, "FATAL: read_bits: invalid n=%d\n", n);
         exit(1);
     }
-    if (bs->pos + n > bs->size * 8) {
+    if (bs->pos > bs->size_bits || (size_t)n > bs->size_bits - bs->pos) {
         fprintf(stderr, "FATAL: read out of bounds at pos=%zu n=%d\n", bs->pos, n);
         exit(1);
     }
@@ -36,8 +37,12 @@ uint64_t bs_read_bits(BitStream *bs, int n) {
 }
 
 void bs_write_bits(BitStream *bs, uint64_t value, int n) {
-   if (n > 64) {
-        fprintf(stderr, "FATAL: write_bits: n=%d > 64\n", n);
+    if (n < 0 || n > 64) {
+        fprintf(stderr, "FATAL: write_bits: invalid n=%d\n", n);
+        exit(1);
+    }
+    if (bs->pos > bs->size_bits || (size_t)n > bs->size_bits - bs->pos) {
+        fprintf(stderr, "FATAL: write out of bounds at pos=%zu n=%d\n", bs->pos, n);
         exit(1);
     }
     for (int i = n - 1; i >= 0; i--) {
@@ -51,5 +56,10 @@ void bs_write_bits(BitStream *bs, uint64_t value, int n) {
 }
 
 void bs_seek(BitStream *bs, size_t bit_pos) {
+    if (bit_pos > bs->size_bits) {
+        fprintf(stderr, "FATAL: seek out of bounds at pos=%zu size=%zu\n",
+                bit_pos, bs->size_bits);
+        exit(1);
+    }
     bs->pos = bit_pos;
 }

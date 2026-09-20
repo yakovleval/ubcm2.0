@@ -45,12 +45,13 @@ typedef struct {
 VM  *vm_create(void);
 void vm_free(VM *vm);
 
-int  vm_create_register(VM *vm, int num, size_t size_bits);
-int  vm_delete_register(VM *vm, int num);
+void vm_create_register(VM *vm, int num, size_t size_bits);
+void vm_delete_register(VM *vm, int num);
+void vm_resize_register(VM *vm, int num, size_t size_bits);
 Register *vm_get_register(VM *vm, int num);
 
-int  vm_load_procedure(VM *vm, int reg_num, const char *filename);
-int  vm_load_rs(VM *vm, int reg_num, const char *filename);
+void vm_load_procedure(VM *vm, int reg_num, const char *filename);
+void vm_load_rs(VM *vm, int reg_num, const char *filename);
 
 // Запуск
 void vm_start(VM *vm, int proc_reg, int rs_reg);

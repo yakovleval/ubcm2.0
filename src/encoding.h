@@ -22,6 +22,11 @@
 #define VALUE_FLOAT    1
 
 typedef struct {
+    uint8_t reg_class;
+    uint8_t reg_num;
+} RegisterSelector;
+
+typedef struct {
     uint8_t  mode;
     uint8_t  reg_class;
     uint8_t  reg_num;
@@ -32,7 +37,7 @@ typedef struct {
 
 typedef struct {
     Address  addr;
-    uint64_t size;       // размер диапазона (0 для immediate)
+    uint64_t size_bits;  // размер диапазона (0 для immediate)
 } Range;
 
 Range    read_source(BitStream *bs);
@@ -53,6 +58,7 @@ uint64_t read_variable_size(BitStream *bs);
 void     write_variable_size(BitStream *bs, uint64_t value);
 
 // ===== Адреса =====
+RegisterSelector read_register_selector(BitStream *bs);
 Address  read_address(BitStream *bs);
 uint64_t read_by_address(VM *vm, Address addr);
 void     write_by_address(VM *vm, Address addr, uint64_t value);

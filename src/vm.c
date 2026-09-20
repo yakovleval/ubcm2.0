@@ -21,8 +21,11 @@ void vm_free(VM *vm) {
     free(vm);
 }
 
-int vm_create_register(VM *vm, int num, size_t size_bits) {
-    if (num < 0 || num >= MAX_REGISTERS) return -1;
+void vm_create_register(VM *vm, int num, size_t size_bits) {
+    if (num < 0 || num >= MAX_REGISTERS) {
+        fprintf(stderr, "FATAL: invalid register number %d\n", num);
+        exit(1);
+    }
     if (vm->registers[num]) {
         bs_free(vm->registers[num]->data);
         free(vm->registers[num]);
@@ -30,17 +33,54 @@ int vm_create_register(VM *vm, int num, size_t size_bits) {
     Register *reg = malloc(sizeof(Register));
     reg->data = bs_create(size_bits);
     vm->registers[num] = reg;
-    return 0;
 }
 
-int vm_delete_register(VM *vm, int num) {
-    if (num < 0 || num >= MAX_REGISTERS) return -1;
+void vm_delete_register(VM *vm, int num) {
+    if (num < 0 || num >= MAX_REGISTERS) {
+        fprintf(stderr, "FATAL: invalid register number %d\n", num);
+        exit(1);
+    }
     if (vm->registers[num]) {
         bs_free(vm->registers[num]->data);
         free(vm->registers[num]);
         vm->registers[num] = NULL;
     }
-    return 0;
+}
+
+void vm_resize_register(VM *vm, int num, size_t size_bits) {
+    if (num < 0 || num >= MAX_REGISTERS) {
+        fprintf(stderr, "FATAL: invalid register number %d\n", num);
+        exit(1);
+    }
+    if (size_bits == 0) {
+        vm_delete_register(vm, num);
+        return;
+    }
+
+    Register *reg = vm->registers[num];
+    if (!reg) {
+        vm_create_register(vm, num, size_bits);
+        return;
+    }
+
+    BitStream *old_data = reg->data;
+    BitStream *new_data = bs_create(size_bits);
+    size_t preserved_bits = old_data->size_bits < size_bits
+                          ? old_data->size_bits : size_bits;
+    size_t full_bytes = preserved_bits / 8;
+    size_t remaining_bits = preserved_bits % 8;
+
+    if (full_bytes > 0)
+        memcpy(new_data->data, old_data->data, full_bytes);
+
+    if (remaining_bits > 0) {
+        uint8_t mask = (uint8_t)(0xFFu << (8 - remaining_bits));
+        new_data->data[full_bytes] = old_data->data[full_bytes] & mask;
+    }
+
+    new_data->pos = old_data->pos < size_bits ? old_data->pos : size_bits;
+    reg->data = new_data;
+    bs_free(old_data);
 }
 
 Register *vm_get_register(VM *vm, int num) {
@@ -48,9 +88,16 @@ Register *vm_get_register(VM *vm, int num) {
     return vm->registers[num];
 }
 
-static int load_file_into_register(VM *vm, int reg_num, const char *filename) {
+static void load_file_into_register(VM *vm, int reg_num, const char *filename) {
+    if (!filename) {
+        fprintf(stderr, "FATAL: filename is null\n");
+        exit(1);
+    }
     FILE *f = fopen(filename, "rb");
-    if (!f) return -1;
+    if (!f) {
+        fprintf(stderr, "FATAL: cannot open file: %s\n", filename);
+        exit(1);
+    }
     fseek(f, 0, SEEK_END);
     size_t size = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -58,18 +105,19 @@ static int load_file_into_register(VM *vm, int reg_num, const char *filename) {
     Register *reg = vm_get_register(vm, reg_num);
     if (fread(reg->data->data, 1, size, f) != size) {
         fclose(f);
-        fprintf(stderr, "FATAL: error reading file: %s\n", filename ? filname: "(null)"); exit(1);
+        fprintf(stderr, "FATAL: error reading file: %s\n",
+                filename ? filename : "(null)");
+        exit(1);
     }
     fclose(f);
-    return 0;
 }
 
-int vm_load_procedure(VM *vm, int reg_num, const char *filename) {
-    return load_file_into_register(vm, reg_num, filename);
+void vm_load_procedure(VM *vm, int reg_num, const char *filename) {
+    load_file_into_register(vm, reg_num, filename);
 }
 
-int vm_load_rs(VM *vm, int reg_num, const char *filename) {
-    return load_file_into_register(vm, reg_num, filename);
+void vm_load_rs(VM *vm, int reg_num, const char *filename) {
+    load_file_into_register(vm, reg_num, filename);
 }
 
 void vm_set_uint64(VM *vm, int reg_num, uint64_t value) {
@@ -127,7 +175,8 @@ static ArAction exec_compute(VM *vm) {
         case 3: result = v2 ? v1 / v2 : 0; break;
     }
 
-    uint64_t rsize = src1.size > src2.size ? src1.size : src2.size;
+    uint64_t rsize = src1.size_bits > src2.size_bits
+                   ? src1.size_bits : src2.size_bits;
     write_range(vm, dst, result, rsize);
 
     printf("[COMPUTE] op=%llu -> reg%d[%llu] = %llu (size=%llu)\n",
@@ -242,6 +291,42 @@ static ArAction exec_return(VM *vm, uint64_t next0) {
     return AR_RETURN;
 }
 
+// Builtin: RESIZE (0x0C)
+static ArAction exec_resize(VM *vm) {
+    ActivationRecord *ar = vm->current_ar;
+    Register *proc = vm_get_register(vm, ar->proc_reg);
+    BitStream *bs = proc->data;
+    bs_seek(bs, ar->proc_pos);
+
+    RegisterSelector target = read_register_selector(bs);
+    Range size_source = read_source(bs);
+    ar->proc_pos = bs->pos;
+
+    if (target.reg_class != REG_GLOBAL) {
+        fprintf(stderr,
+                "FATAL: RESIZE supports only global registers "
+                "(class=%u, pos=%llu)\n",
+                target.reg_class, (unsigned long long)ar->proc_pos);
+        exit(1);
+    }
+
+    uint64_t new_size = read_range(vm, size_source);
+    size_t new_size_bits = (size_t)new_size;
+    if ((uint64_t)new_size_bits != new_size) {
+        fprintf(stderr,
+                "FATAL: register size does not fit size_t "
+                "(size=%llu, pos=%llu)\n",
+                (unsigned long long)new_size,
+                (unsigned long long)ar->proc_pos);
+        exit(1);
+    }
+
+    vm_resize_register(vm, target.reg_num, new_size_bits);
+    printf("[RESIZE] reg%u -> %llu bits\n",
+           target.reg_num, (unsigned long long)new_size);
+    return AR_NOP;
+}
+
 // Builtin: EXIT (0x0B)
 static ArAction exec_exit(VM *vm) {
     printf("[EXIT] Halted.\n");
@@ -257,6 +342,7 @@ static ArAction exec_builtin(VM *vm, uint16_t cmd, uint64_t next0) {
         case 0x08: return exec_call_new_both(vm, next0);
         case 0x09: return exec_return(vm, next0);
         case 0x0B: return exec_exit(vm);
+        case 0x0C: return exec_resize(vm);
         default:
             fprintf(stderr, "FATAL: unknown builtin 0x%X\n", cmd);
             vm->halted = 1;

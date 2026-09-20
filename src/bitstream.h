@@ -6,7 +6,8 @@
 
 typedef struct {
     uint8_t *data;   // сырые байты
-    size_t   size;   // размер в байтах
+    size_t   size;   // выделенный размер в байтах
+    size_t   size_bits; // логический размер в битах
     size_t   pos;    // позиция в битах
 } BitStream;
 

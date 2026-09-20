@@ -6,7 +6,7 @@ COMMON_CFLAGS = -Wall -Wextra -Werror -std=c11
 DEBUG_CFLAGS = $(COMMON_CFLAGS) -O0 -g3 -fno-omit-frame-pointer \
 	-fsanitize=address,undefined
 DEBUG_LDFLAGS = -fsanitize=address,undefined
-RELEASE_CFLAGS = $(COMMON_CFLAGS) -O2 -DNDEBUG
+RELEASE_CFLAGS = $(COMMON_CFLAGS) -DNDEBUG
 
 DEBUG_DIR = debug
 RELEASE_DIR = release
