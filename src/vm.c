@@ -272,7 +272,6 @@ static ArAction exec_return(VM *vm, uint64_t next0) {
     BitStream *bs = proc->data;
     bs_seek(bs, ar->proc_pos);
 
-    printf("[DEBUG] proc_reg=%llu, proc_pos=%llu\n", (unsigned long long)ar->proc_reg, (unsigned long long)ar->proc_pos); 
     Range src = read_source(bs);
     ar->proc_pos = bs->pos;
     uint64_t val = read_range(vm, src);

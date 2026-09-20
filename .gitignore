@@ -5,4 +5,9 @@ AGENTS.md
 *.sw?
 *.ubc
 *.rs
-*.py
+*.rn
+
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
