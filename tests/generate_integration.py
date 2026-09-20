@@ -122,7 +122,22 @@ def generate_call_new_procedure_0110():
 
 
 def generate_call_new_network_0111():
-    program = "0111" + immediate(31) + return_immediate(17) + "1011"
+    entry_offset = 0
+    for _ in range(8):
+        body = (
+            "0111"
+            + direct_address(1, entry_offset)
+            + return_immediate(17)
+            + "1011"
+        )
+        new_offset = len(body)
+        if new_offset == entry_offset:
+            break
+        entry_offset = new_offset
+    else:
+        raise RuntimeError("entry-value offset did not converge")
+
+    program = body + format(31, "064b")
     network = build_network(
         {"0111": 0x07, "1011": 0x0B},
         {"1001": 0x09},

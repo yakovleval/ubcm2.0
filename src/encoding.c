@@ -10,7 +10,7 @@ typedef enum {
 
 typedef struct {
     ResolvedRangeKind kind;
-    BitStream *stream;
+    BitVector *vector;
     size_t offset;
     size_t size_bits;
     uint64_t immediate;
@@ -85,12 +85,12 @@ static ResolvedRange resolve_address(VM *vm, Address addr,
             Register *reg = resolve_register(vm, addr.reg_class,
                                              addr.reg_num, stream_pos);
             resolved.kind = RESOLVED_STREAM;
-            resolved.stream = reg->data;
+            resolved.vector = reg->bits;
             resolved.offset = checked_size(addr.offset, "range offset",
                                            stream_pos);
-            if (resolved.offset > resolved.stream->size_bits ||
+            if (resolved.offset > resolved.vector->size_bits ||
                 resolved.size_bits >
-                    resolved.stream->size_bits - resolved.offset) {
+                    resolved.vector->size_bits - resolved.offset) {
                 fprintf(stderr,
                         "FATAL: range out of bounds at pos=%zu\n",
                         stream_pos);
@@ -119,13 +119,13 @@ static ResolvedRange resolve_address(VM *vm, Address addr,
     }
 }
 
-Range read_source(BitStream *bs) {
+Range read_source(BitCursor *cursor) {
     Range r = {0};
-    r.addr = read_address(bs);
+    r.addr = read_address(cursor);
     if (r.addr.mode == ADDR_IMMEDIATE)
         r.size_bits = r.addr.imm_size;
     else
-        r.size_bits = read_variable_size(bs);
+        r.size_bits = read_variable_size(cursor);
     return r;
 }
 
@@ -140,8 +140,8 @@ uint64_t read_range(VM *vm, Range r, size_t stream_pos) {
     if (resolved.kind == RESOLVED_IMMEDIATE)
         return resolved.immediate;
 
-    bs_seek(resolved.stream, resolved.offset);
-    return bs_read_bits(resolved.stream, (int)resolved.size_bits);
+    BitCursor cursor = bc_create(resolved.vector, resolved.offset);
+    return bc_read_bits(&cursor, (int)resolved.size_bits);
 }
 
 void write_range(VM *vm, Address dst, uint64_t value, uint64_t size_bits,
@@ -153,15 +153,15 @@ void write_range(VM *vm, Address dst, uint64_t value, uint64_t size_bits,
                 stream_pos);
         exit(1);
     }
-    bs_seek(resolved.stream, resolved.offset);
-    bs_write_bits(resolved.stream, value, (int)resolved.size_bits);
+    BitCursor cursor = bc_create(resolved.vector, resolved.offset);
+    bc_write_bits(&cursor, value, (int)resolved.size_bits);
 }
 
-static void copy_bitstreams(BitStream *src, BitStream *dst, size_t size_bits) {
+static void copy_cursors(BitCursor *src, BitCursor *dst, size_t size_bits) {
     while (size_bits > 0) {
         int chunk = size_bits > 64 ? 64 : (int)size_bits;
-        uint64_t value = bs_read_bits(src, chunk);
-        bs_write_bits(dst, value, chunk);
+        uint64_t value = bc_read_bits(src, chunk);
+        bc_write_bits(dst, value, chunk);
         size_bits -= (size_t)chunk;
     }
 }
@@ -171,19 +171,22 @@ void copy_range(VM *vm, Range src, Address dst, size_t stream_pos) {
                                            stream_pos);
     ResolvedRange destination = resolve_address(vm, dst, src.size_bits, 1,
                                                 stream_pos);
-    BitStream *temporary = bs_create(source.size_bits);
+    BitVector *temporary = bv_create(source.size_bits);
+    BitCursor temporary_writer = bc_create(temporary, 0);
 
     if (source.kind == RESOLVED_IMMEDIATE) {
-        bs_write_bits(temporary, source.immediate, (int)source.size_bits);
+        bc_write_bits(&temporary_writer, source.immediate,
+                      (int)source.size_bits);
     } else {
-        bs_seek(source.stream, source.offset);
-        copy_bitstreams(source.stream, temporary, source.size_bits);
+        BitCursor source_cursor = bc_create(source.vector, source.offset);
+        copy_cursors(&source_cursor, &temporary_writer, source.size_bits);
     }
 
-    bs_seek(temporary, 0);
-    bs_seek(destination.stream, destination.offset);
-    copy_bitstreams(temporary, destination.stream, source.size_bits);
-    bs_free(temporary);
+    BitCursor temporary_reader = bc_create(temporary, 0);
+    BitCursor destination_cursor = bc_create(destination.vector,
+                                             destination.offset);
+    copy_cursors(&temporary_reader, &destination_cursor, source.size_bits);
+    bv_free(temporary);
 }
 
 uint64_t read_value_sized(VM *vm, Address addr, uint64_t size_bits,
@@ -201,50 +204,50 @@ void write_value_sized(VM *vm, Address addr, uint64_t value,
 // Размеры и адреса
 // ============================================================
 
-uint64_t read_variable_size(BitStream *bs) {
-    uint64_t header = bs_read_bits(bs, 3);
+uint64_t read_variable_size(BitCursor *cursor) {
+    uint64_t header = bc_read_bits(cursor, 3);
     uint64_t num_bytes = header + 1;  // 1..8
     uint64_t value = 0;
     for (uint64_t i = 0; i < num_bytes; i++)
-        value = (value << 8) | bs_read_bits(bs, 8);
+        value = (value << 8) | bc_read_bits(cursor, 8);
     return value;
 }
 
-void write_variable_size(BitStream *bs, uint64_t value) {
+void write_variable_size(BitCursor *cursor, uint64_t value) {
     int bytes = 1;
     uint64_t tmp = value;
     while (tmp > 0xFF && bytes < 8) { tmp >>= 8; bytes++; }
-    bs_write_bits(bs, bytes - 1, 3);
+    bc_write_bits(cursor, bytes - 1, 3);
     for (int i = bytes - 1; i >= 0; i--)
-        bs_write_bits(bs, (value >> (i * 8)) & 0xFF, 8);
+        bc_write_bits(cursor, (value >> (i * 8)) & 0xFF, 8);
 }
 
 // ============================================================
 // Адреса
 // ============================================================
 
-RegisterSelector read_register_selector(BitStream *bs) {
+RegisterSelector read_register_selector(BitCursor *cursor) {
     RegisterSelector selector;
-    selector.reg_class = bs_read_bits(bs, 2);
-    selector.reg_num = bs_read_bits(bs, 5);
+    selector.reg_class = bc_read_bits(cursor, 2);
+    selector.reg_num = bc_read_bits(cursor, 5);
     return selector;
 }
 
-Address read_address(BitStream *bs) {
+Address read_address(BitCursor *cursor) {
     Address addr = {0};
-    addr.mode = bs_read_bits(bs, 2);
+    addr.mode = bc_read_bits(cursor, 2);
 
     switch (addr.mode) {
         case ADDR_IMMEDIATE:
-            addr.imm_size = read_variable_size(bs);
-	    addr.imm      = bs_read_bits(bs, (int)addr.imm_size);
+            addr.imm_size = read_variable_size(cursor);
+            addr.imm = bc_read_bits(cursor, (int)addr.imm_size);
             break;
 
         case ADDR_DIRECT: {
-            RegisterSelector selector = read_register_selector(bs);
+            RegisterSelector selector = read_register_selector(cursor);
             addr.reg_class = selector.reg_class;
             addr.reg_num   = selector.reg_num;
-            addr.offset    = read_variable_size(bs);
+            addr.offset    = read_variable_size(cursor);
             break;
         }
 
@@ -274,8 +277,8 @@ void write_by_address(VM *vm, Address addr, uint64_t value,
 // Целые нефиксированного размера
 // ============================================================
 
-uint64_t read_int(BitStream *bs) {
-    uint64_t size_bits = read_variable_size(bs);
+uint64_t read_int(BitCursor *cursor) {
+    uint64_t size_bits = read_variable_size(cursor);
     if (size_bits > 64) {
 	fprintf(stderr,
             "FATAL: integer > 64 bits not supported (%llu bits)\n",
@@ -283,16 +286,16 @@ uint64_t read_int(BitStream *bs) {
         exit(1);
     }
     if (size_bits == 0) return 0;
-    return bs_read_bits(bs, (int)size_bits);
+    return bc_read_bits(cursor, (int)size_bits);
 }
 
-void write_int(BitStream *bs, uint64_t value) {
+void write_int(BitCursor *cursor, uint64_t value) {
     // Считаем минимальное число бит
     int bits = 1;
     uint64_t tmp = value;
     while (tmp > 1) { tmp >>= 1; bits++; }
-    write_variable_size(bs, bits);
-    bs_write_bits(bs, value, bits);
+    write_variable_size(cursor, bits);
+    bc_write_bits(cursor, value, bits);
 }
 
 // ============================================================
@@ -302,9 +305,9 @@ void write_int(BitStream *bs, uint64_t value) {
 // Храним как: [int: мантисса] [int: порядок]
 // value = mantissa * 2^exponent
 // Для простоты: используем double и разбираем его как IEEE 754
-double read_float(BitStream *bs) {
-    uint64_t mantissa = read_int(bs);
-    uint64_t exponent = read_int(bs);
+double read_float(BitCursor *cursor) {
+    uint64_t mantissa = read_int(cursor);
+    uint64_t exponent = read_int(cursor);
 
     // Простейшая интерпретация: value = mantissa * 2^(exponent - 1023)
     double value = (double)mantissa;
@@ -314,7 +317,7 @@ double read_float(BitStream *bs) {
     return value;
 }
 
-void write_float(BitStream *bs, double value) {
+void write_float(BitCursor *cursor, double value) {
     // Разбираем double как мантиссу и порядок
     uint64_t bits;
     memcpy(&bits, &value, sizeof(double));
@@ -325,30 +328,30 @@ void write_float(BitStream *bs, double value) {
     // Добавляем неявную единицу (нормализация)
     mantissa |= 0x0010000000000000ULL;
 
-    write_int(bs, mantissa);
-    write_int(bs, exponent);
+    write_int(cursor, mantissa);
+    write_int(cursor, exponent);
 }
 
 // ============================================================
 // Значения (тип + значение)
 // ============================================================
 
-Value read_value(BitStream *bs) {
+Value read_value(BitCursor *cursor) {
     Value v = {0};
-    v.type = bs_read_bits(bs, 1);
+    v.type = bc_read_bits(cursor, 1);
     if (v.type == VALUE_INT) {
-        v.i = read_int(bs);
+        v.i = read_int(cursor);
     } else {
-        v.f = read_float(bs);
+        v.f = read_float(cursor);
     }
     return v;
 }
 
-void write_value(BitStream *bs, Value v) {
-    bs_write_bits(bs, v.type, 1);
+void write_value(BitCursor *cursor, Value v) {
+    bc_write_bits(cursor, v.type, 1);
     if (v.type == VALUE_INT) {
-        write_int(bs, v.i);
+        write_int(cursor, v.i);
     } else {
-        write_float(bs, v.f);
+        write_float(cursor, v.f);
     }
 }

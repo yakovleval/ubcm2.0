@@ -17,10 +17,10 @@ static void check_resize(VM *vm, const char *case_name) {
     Register *reg21 = vm_get_register(vm, 21);
     if (!reg21)
         fail(case_name, "register 21 was not created");
-    if (reg21->data->size_bits != 9)
+    if (reg21->bits->size_bits != 9)
         fail(case_name, "register 21 has an unexpected bit size");
-    for (size_t index = 0; index < reg21->data->size; index++) {
-        if (reg21->data->data[index] != 0)
+    for (size_t index = 0; index < reg21->bits->size; index++) {
+        if (reg21->bits->data[index] != 0)
             fail(case_name, "new register bits are not zero-initialized");
     }
 }
@@ -29,11 +29,11 @@ static void check_copy(VM *vm, const char *case_name) {
     Register *reg = vm_get_register(vm, 20);
     if (!reg)
         fail(case_name, "destination register 20 was not created");
-    if (reg->data->size_bits != 20)
+    if (reg->bits->size_bits != 20)
         fail(case_name, "destination register has an unexpected bit size");
 
-    bs_seek(reg->data, 0);
-    if (bs_read_bits(reg->data, 20) != UINT64_C(0xB5696))
+    BitCursor cursor = bc_create(reg->bits, 0);
+    if (bc_read_bits(&cursor, 20) != UINT64_C(0xB5696))
         fail(case_name, "COPY produced unexpected destination bits");
 }
 

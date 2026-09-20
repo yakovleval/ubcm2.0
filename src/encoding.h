@@ -40,7 +40,7 @@ typedef struct {
     uint64_t size_bits;  // размер диапазона или immediate-значения
 } Range;
 
-Range    read_source(BitStream *bs);
+Range    read_source(BitCursor *cursor);
 uint64_t read_range(VM *vm, Range r, size_t stream_pos);
 void     write_range(VM *vm, Address dst, uint64_t value, uint64_t size_bits,
                      size_t stream_pos);
@@ -58,26 +58,26 @@ void     write_value_sized(VM *vm, Address addr, uint64_t value,
                            uint64_t size_bits, size_t stream_pos);
 
 // ===== Размеры и адреса =====
-uint64_t read_variable_size(BitStream *bs);
-void     write_variable_size(BitStream *bs, uint64_t value);
+uint64_t read_variable_size(BitCursor *cursor);
+void     write_variable_size(BitCursor *cursor, uint64_t value);
 
 // ===== Адреса =====
-RegisterSelector read_register_selector(BitStream *bs);
-Address  read_address(BitStream *bs);
+RegisterSelector read_register_selector(BitCursor *cursor);
+Address  read_address(BitCursor *cursor);
 uint64_t read_by_address(VM *vm, Address addr, size_t stream_pos);
 void     write_by_address(VM *vm, Address addr, uint64_t value,
                           size_t stream_pos);
 
 // ===== Целые нефиксированного размера =====
-uint64_t read_int(BitStream *bs);
-void     write_int(BitStream *bs, uint64_t value);
+uint64_t read_int(BitCursor *cursor);
+void     write_int(BitCursor *cursor, uint64_t value);
 
 // ===== Вещественные (мантисса + порядок) =====
-double   read_float(BitStream *bs);
-void     write_float(BitStream *bs, double value);
+double   read_float(BitCursor *cursor);
+void     write_float(BitCursor *cursor, double value);
 
 // ===== Значения (тип + значение) =====
-Value    read_value(BitStream *bs);
-void     write_value(BitStream *bs, Value v);
+Value    read_value(BitCursor *cursor);
+void     write_value(BitCursor *cursor, Value v);
 
 #endif

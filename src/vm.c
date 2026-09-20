@@ -9,7 +9,7 @@ VM *vm_create(void) { return calloc(1, sizeof(VM)); }
 void vm_free(VM *vm) {
     for (int i = 0; i < MAX_REGISTERS; i++) {
         if (vm->registers[i]) {
-            bs_free(vm->registers[i]->data);
+            bv_free(vm->registers[i]->bits);
             free(vm->registers[i]);
         }
     }
@@ -27,11 +27,11 @@ void vm_create_register(VM *vm, int num, size_t size_bits) {
         exit(1);
     }
     if (vm->registers[num]) {
-        bs_free(vm->registers[num]->data);
+        bv_free(vm->registers[num]->bits);
         free(vm->registers[num]);
     }
     Register *reg = malloc(sizeof(Register));
-    reg->data = bs_create(size_bits);
+    reg->bits = bv_create(size_bits);
     vm->registers[num] = reg;
 }
 
@@ -41,7 +41,7 @@ void vm_delete_register(VM *vm, int num) {
         exit(1);
     }
     if (vm->registers[num]) {
-        bs_free(vm->registers[num]->data);
+        bv_free(vm->registers[num]->bits);
         free(vm->registers[num]);
         vm->registers[num] = NULL;
     }
@@ -63,24 +63,23 @@ void vm_resize_register(VM *vm, int num, size_t size_bits) {
         return;
     }
 
-    BitStream *old_data = reg->data;
-    BitStream *new_data = bs_create(size_bits);
-    size_t preserved_bits = old_data->size_bits < size_bits
-                          ? old_data->size_bits : size_bits;
+    BitVector *old_bits = reg->bits;
+    BitVector *new_bits = bv_create(size_bits);
+    size_t preserved_bits = old_bits->size_bits < size_bits
+                          ? old_bits->size_bits : size_bits;
     size_t full_bytes = preserved_bits / 8;
     size_t remaining_bits = preserved_bits % 8;
 
     if (full_bytes > 0)
-        memcpy(new_data->data, old_data->data, full_bytes);
+        memcpy(new_bits->data, old_bits->data, full_bytes);
 
     if (remaining_bits > 0) {
         uint8_t mask = (uint8_t)(0xFFu << (8 - remaining_bits));
-        new_data->data[full_bytes] = old_data->data[full_bytes] & mask;
+        new_bits->data[full_bytes] = old_bits->data[full_bytes] & mask;
     }
 
-    new_data->pos = old_data->pos < size_bits ? old_data->pos : size_bits;
-    reg->data = new_data;
-    bs_free(old_data);
+    reg->bits = new_bits;
+    bv_free(old_bits);
 }
 
 Register *vm_get_register(VM *vm, int num) {
@@ -103,7 +102,7 @@ static void load_file_into_register(VM *vm, int reg_num, const char *filename) {
     fseek(f, 0, SEEK_SET);
     vm_create_register(vm, reg_num, size * 8);
     Register *reg = vm_get_register(vm, reg_num);
-    if (fread(reg->data->data, 1, size, f) != size) {
+    if (fread(reg->bits->data, 1, size, f) != size) {
         fclose(f);
         fprintf(stderr, "FATAL: error reading file: %s\n",
                 filename ? filename : "(null)");
@@ -123,28 +122,26 @@ void vm_load_rs(VM *vm, int reg_num, const char *filename) {
 void vm_set_uint64(VM *vm, int reg_num, uint64_t value) {
     Register *reg = vm_get_register(vm, reg_num);
     if (!reg) { vm_create_register(vm, reg_num, 64); reg = vm_get_register(vm, reg_num); }
-    bs_seek(reg->data, 0);
-    bs_write_bits(reg->data, value, 64);
+    BitCursor cursor = bc_create(reg->bits, 0);
+    bc_write_bits(&cursor, value, 64);
 }
 
 uint64_t vm_get_uint64(VM *vm, int reg_num) {
     Register *reg = vm_get_register(vm, reg_num);
     if (!reg) return 0;
-    bs_seek(reg->data, 0);
-    return bs_read_bits(reg->data, 64);
+    BitCursor cursor = bc_create(reg->bits, 0);
+    return bc_read_bits(&cursor, 64);
 }
 
 // Чтение узла из РС по адресу
-static Node read_node(BitStream *bs, uint64_t addr) {
-    size_t saved = bs->pos;
-    bs_seek(bs, addr * 64);
+static Node read_node(BitVector *bits, uint64_t addr) {
+    BitCursor cursor = bc_create(bits, addr * 64);
     Node n;
-    n.type     = bs_read_bits(bs, 1);
-    n.data     = bs_read_bits(bs, 15);
-    n.next0    = bs_read_bits(bs, 16);
-    n.next1    = bs_read_bits(bs, 16);
-    n.resolver = bs_read_bits(bs, 16);
-    bs_seek(bs, saved);
+    n.type     = bc_read_bits(&cursor, 1);
+    n.data     = bc_read_bits(&cursor, 15);
+    n.next0    = bc_read_bits(&cursor, 16);
+    n.next1    = bc_read_bits(&cursor, 16);
+    n.resolver = bc_read_bits(&cursor, 16);
     return n;
 }
 
@@ -152,14 +149,13 @@ static Node read_node(BitStream *bs, uint64_t addr) {
 static ArAction exec_compute(VM *vm) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
-    BitStream *bs = proc->data;
-    bs_seek(bs, ar->proc_pos);
+    BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
 
-    uint64_t opcode = bs_read_bits(bs, 5);
-    Range src1 = read_source(bs);
-    Range src2 = read_source(bs);
-    Address dst = read_address(bs);   // приёмник — без размера
-    ar->proc_pos = bs->pos;
+    uint64_t opcode = bc_read_bits(&cursor, 5);
+    Range src1 = read_source(&cursor);
+    Range src2 = read_source(&cursor);
+    Address dst = read_address(&cursor);   // приёмник — без размера
+    ar->proc_pos = cursor.pos;
 
     uint64_t v1 = read_range(vm, src1, ar->proc_pos);
     uint64_t v2 = read_range(vm, src2, ar->proc_pos);
@@ -186,12 +182,11 @@ static ArAction exec_compute(VM *vm) {
 static ArAction exec_copy(VM *vm) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
-    BitStream *bs = proc->data;
-    bs_seek(bs, ar->proc_pos);
+    BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
 
-    Range src = read_source(bs);
-    Address dst = read_address(bs);
-    ar->proc_pos = bs->pos;
+    Range src = read_source(&cursor);
+    Address dst = read_address(&cursor);
+    ar->proc_pos = cursor.pos;
 
     copy_range(vm, src, dst, ar->proc_pos);
     printf("[COPY] %llu bits\n", (unsigned long long)src.size_bits);
@@ -202,11 +197,10 @@ static ArAction exec_copy(VM *vm) {
 static ArAction exec_call_new_proc(VM *vm, uint64_t next0) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
-    BitStream *bs = proc->data;
-    bs_seek(bs, ar->proc_pos);
+    BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
 
-    Address src = read_address(bs);
-    ar->proc_pos = bs->pos;
+    Address src = read_address(&cursor);
+    ar->proc_pos = cursor.pos;
     ar->rs_ptr   = next0;   // caller продолжит отсюда (перезапишется, если shares_rs)
 
     ActivationRecord *n = calloc(1, sizeof(ActivationRecord));
@@ -227,12 +221,11 @@ static ArAction exec_call_new_proc(VM *vm, uint64_t next0) {
 static ArAction exec_call_new_rs(VM *vm, uint64_t next0) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
-    BitStream *bs = proc->data;
-    bs_seek(bs, ar->proc_pos);
+    BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
 
-    Address src = read_address(bs);
-    uint64_t entry = read_by_address(vm, src, bs->pos);
-    ar->proc_pos = bs->pos;
+    Address src = read_address(&cursor);
+    uint64_t entry = read_by_address(vm, src, cursor.pos);
+    ar->proc_pos = cursor.pos;
     ar->rs_ptr   = next0;
 
     ActivationRecord *n = calloc(1, sizeof(ActivationRecord));
@@ -253,12 +246,11 @@ static ArAction exec_call_new_rs(VM *vm, uint64_t next0) {
 static ArAction exec_call_new_both(VM *vm, uint64_t next0) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
-    BitStream *bs = proc->data;
-    bs_seek(bs, ar->proc_pos);
+    BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
 
-    Address src_proc = read_address(bs);
-    Address src_rs   = read_address(bs);
-    ar->proc_pos = bs->pos;
+    Address src_proc = read_address(&cursor);
+    Address src_rs   = read_address(&cursor);
+    ar->proc_pos = cursor.pos;
     ar->rs_ptr   = next0;
 
     ActivationRecord *n = calloc(1, sizeof(ActivationRecord));
@@ -281,11 +273,10 @@ static ArAction exec_call_new_both(VM *vm, uint64_t next0) {
 static ArAction exec_return(VM *vm, uint64_t next0) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
-    BitStream *bs = proc->data;
-    bs_seek(bs, ar->proc_pos);
+    BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
 
-    Range src = read_source(bs);
-    ar->proc_pos = bs->pos;
+    Range src = read_source(&cursor);
+    ar->proc_pos = cursor.pos;
     uint64_t val = read_range(vm, src, ar->proc_pos);
     printf("[RETURN] val=%llu\n", (unsigned long long)val);
 
@@ -306,12 +297,11 @@ static ArAction exec_return(VM *vm, uint64_t next0) {
 static ArAction exec_resize(VM *vm) {
     ActivationRecord *ar = vm->current_ar;
     Register *proc = vm_get_register(vm, ar->proc_reg);
-    BitStream *bs = proc->data;
-    bs_seek(bs, ar->proc_pos);
+    BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
 
-    RegisterSelector target = read_register_selector(bs);
-    Range size_source = read_source(bs);
-    ar->proc_pos = bs->pos;
+    RegisterSelector target = read_register_selector(&cursor);
+    Range size_source = read_source(&cursor);
+    ar->proc_pos = cursor.pos;
 
     if (target.reg_class != REG_GLOBAL) {
         fprintf(stderr,
@@ -379,7 +369,7 @@ void vm_step(VM *vm) {
     if (!ar) { vm->halted = 1; return; }
 
     Register *rs = vm_get_register(vm, ar->rs_reg);
-    Node node = read_node(rs->data, ar->rs_ptr);
+    Node node = read_node(rs->bits, ar->rs_ptr);
 
     if (node.type != 0) {
         fprintf(stderr, "FATAL: node type %d not implemented\n", node.type);
@@ -390,9 +380,9 @@ void vm_step(VM *vm) {
     // CHOICE — обрабатываем отдельно (не в exec_builtin)
     if (node.data == 0x03) {
         Register *proc = vm_get_register(vm, ar->proc_reg);
-        bs_seek(proc->data, ar->proc_pos);
-        uint64_t bit = bs_read_bits(proc->data, 1);
-        ar->proc_pos = proc->data->pos;
+        BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
+        uint64_t bit = bc_read_bits(&cursor, 1);
+        ar->proc_pos = cursor.pos;
         ar->rs_ptr = bit ? node.next1 : node.next0;
         return;
     }

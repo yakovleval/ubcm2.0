@@ -7,7 +7,7 @@
 #define MAX_REGISTERS 256
 
 typedef struct {
-    BitStream *data;
+    BitVector *bits;
 } Register;
 
 typedef enum {
