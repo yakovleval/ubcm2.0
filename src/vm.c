@@ -134,32 +134,35 @@ uint64_t vm_get_uint64(VM *vm, int reg_num) {
     return bc_read_bits(&cursor, 64);
 }
 
-// Чтение узла из РС по адресу
-static Node read_node(BitVector *bits, uint64_t addr) {
-    BitCursor cursor = bc_create(bits, addr * 64);
-    Node n;
-    n.type     = bc_read_bits(&cursor, 1);
-    n.data     = bc_read_bits(&cursor, 15);
-    n.next0    = bc_read_bits(&cursor, 16);
-    n.next1    = bc_read_bits(&cursor, 16);
-    n.resolver = bc_read_bits(&cursor, 16);
-    return n;
+static CommandContext command_context_create(VM *vm,
+                                             ActivationRecord *read_ar,
+                                             ActivationRecord *write_ar,
+                                             ResolvingNetworkNode node) {
+    Register *proc = vm_get_register(vm, read_ar->proc_reg);
+    CommandContext context = {
+        .vm = vm,
+        .read_ar = read_ar,
+        .write_ar = write_ar,
+        .node = node,
+        .operands = bc_create(proc->bits, read_ar->proc_pos),
+    };
+    return context;
+}
+
+static void command_context_commit_operands(CommandContext *context) {
+    context->read_ar->proc_pos = context->operands.pos;
 }
 
 // Builtin: COMPUTE (0x04)
-static ArAction exec_compute(VM *vm) {
-    ActivationRecord *ar = vm->current_ar;
-    Register *proc = vm_get_register(vm, ar->proc_reg);
-    BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
+static ArAction exec_compute(CommandContext *context) {
+    uint64_t opcode = bc_read_bits(&context->operands, 5);
+    Range src1 = read_source(&context->operands);
+    Range src2 = read_source(&context->operands);
+    Address dst = read_address(&context->operands);
+    command_context_commit_operands(context);
 
-    uint64_t opcode = bc_read_bits(&cursor, 5);
-    Range src1 = read_source(&cursor);
-    Range src2 = read_source(&cursor);
-    Address dst = read_address(&cursor);   // приёмник — без размера
-    ar->proc_pos = cursor.pos;
-
-    uint64_t v1 = read_range(vm, src1, ar->proc_pos);
-    uint64_t v2 = read_range(vm, src2, ar->proc_pos);
+    uint64_t v1 = read_range(context->vm, src1, context->operands.pos);
+    uint64_t v2 = read_range(context->vm, src2, context->operands.pos);
     uint64_t result = 0;
     switch (opcode) {
         case 0: result = v1 + v2; break;
@@ -170,7 +173,7 @@ static ArAction exec_compute(VM *vm) {
 
     uint64_t rsize = src1.size_bits > src2.size_bits
                    ? src1.size_bits : src2.size_bits;
-    write_range(vm, dst, result, rsize, ar->proc_pos);
+    write_range(context->vm, dst, result, rsize, context->operands.pos);
 
     printf("[COMPUTE] op=%llu -> reg%d[%llu] = %llu (size=%llu)\n",
            (unsigned long long)opcode, dst.reg_num,
@@ -180,79 +183,67 @@ static ArAction exec_compute(VM *vm) {
 }
 
 // Builtin: COPY (0x05)
-static ArAction exec_copy(VM *vm) {
-    ActivationRecord *ar = vm->current_ar;
-    Register *proc = vm_get_register(vm, ar->proc_reg);
-    BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
+static ArAction exec_copy(CommandContext *context) {
+    Range src = read_source(&context->operands);
+    Address dst = read_address(&context->operands);
+    command_context_commit_operands(context);
 
-    Range src = read_source(&cursor);
-    Address dst = read_address(&cursor);
-    ar->proc_pos = cursor.pos;
-
-    copy_range(vm, src, dst, ar->proc_pos);
+    copy_range(context->vm, src, dst, context->operands.pos);
     printf("[COPY] %llu bits\n", (unsigned long long)src.size_bits);
     return AR_NOP;
 }
 
 // 0110: новая процедура, та же РС
-static ArAction exec_call_new_proc(VM *vm, uint64_t next0) {
-    ActivationRecord *ar = vm->current_ar;
-    Register *proc = vm_get_register(vm, ar->proc_reg);
-    BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
-
-    Address src = read_address(&cursor);
-    ar->proc_pos = cursor.pos;
-    ar->rs_ptr   = next0;   // caller продолжит отсюда (перезапишется, если shares_rs)
+static ArAction exec_call_new_proc(CommandContext *context) {
+    ActivationRecord *caller = context->write_ar;
+    Address src = read_address(&context->operands);
+    command_context_commit_operands(context);
+    caller->rs_ptr = context->node.next0;
 
     ActivationRecord *n = calloc(1, sizeof(ActivationRecord));
     n->proc_reg    = src.reg_num;
-    n->rs_reg      = ar->rs_reg;
-    n->rs_ptr      = next0;   // callee стартует с того же узла
+    n->rs_reg      = caller->rs_reg;
+    n->rs_ptr      = context->node.next0;
     n->proc_pos    = src.offset;
     n->shares_rs   = 1;
     n->shares_proc = 0;
-    n->prev        = ar;
-    vm->current_ar = n;
+    n->prev        = caller;
+    context->vm->current_ar = n;
 
     printf("[CALL 0110] proc_reg=%d\n", src.reg_num);
     return AR_CALL;
 }
 
 // 0111: та же процедура, новая РС
-static ArAction exec_call_new_rs(VM *vm, uint64_t next0) {
-    ActivationRecord *ar = vm->current_ar;
-    Register *proc = vm_get_register(vm, ar->proc_reg);
-    BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
-
-    Address src = read_address(&cursor);
-    uint64_t entry = read_by_address(vm, src, cursor.pos);
-    ar->proc_pos = cursor.pos;
-    ar->rs_ptr   = next0;
+static ArAction exec_call_new_rs(CommandContext *context) {
+    ActivationRecord *caller = context->write_ar;
+    Address src = read_address(&context->operands);
+    uint64_t entry = read_by_address(context->vm, src,
+                                     context->operands.pos);
+    command_context_commit_operands(context);
+    caller->rs_ptr = context->node.next0;
 
     ActivationRecord *n = calloc(1, sizeof(ActivationRecord));
-    n->proc_reg    = ar->proc_reg;
-    n->rs_reg      = ar->rs_reg;
+    n->proc_reg    = context->read_ar->proc_reg;
+    n->rs_reg      = caller->rs_reg;
     n->rs_ptr      = entry;
-    n->proc_pos    = ar->proc_pos;   // продолжаем ту же процедуру
+    n->proc_pos    = context->read_ar->proc_pos;
     n->shares_rs   = 0;
     n->shares_proc = 1;
-    n->prev        = ar;
-    vm->current_ar = n;
+    n->prev        = caller;
+    context->vm->current_ar = n;
 
     printf("[CALL 0111] entry=%llu\n", (unsigned long long)entry);
     return AR_CALL;
 }
 
 // 1000: новая процедура + новая РС
-static ArAction exec_call_new_both(VM *vm, uint64_t next0) {
-    ActivationRecord *ar = vm->current_ar;
-    Register *proc = vm_get_register(vm, ar->proc_reg);
-    BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
-
-    Address src_proc = read_address(&cursor);
-    Address src_rs   = read_address(&cursor);
-    ar->proc_pos = cursor.pos;
-    ar->rs_ptr   = next0;
+static ArAction exec_call_new_both(CommandContext *context) {
+    ActivationRecord *caller = context->write_ar;
+    Address src_proc = read_address(&context->operands);
+    Address src_rs = read_address(&context->operands);
+    command_context_commit_operands(context);
+    caller->rs_ptr = context->node.next0;
 
     ActivationRecord *n = calloc(1, sizeof(ActivationRecord));
     n->proc_reg    = src_proc.reg_num;
@@ -261,8 +252,8 @@ static ArAction exec_call_new_both(VM *vm, uint64_t next0) {
     n->proc_pos    = src_proc.offset;
     n->shares_rs   = 0;
     n->shares_proc = 0;
-    n->prev        = ar;
-    vm->current_ar = n;
+    n->prev        = caller;
+    context->vm->current_ar = n;
 
     printf("[CALL 1000] proc=%d, rs=%d, entry=%llu\n",
            src_proc.reg_num, src_rs.reg_num,
@@ -271,96 +262,91 @@ static ArAction exec_call_new_both(VM *vm, uint64_t next0) {
 }
 
 // Builtin: RETURN RESULT (0x09)
-static ArAction exec_return_result(VM *vm) {
-    ActivationRecord *ar = vm->current_ar;
-    Register *proc = vm_get_register(vm, ar->proc_reg);
-    BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
-
-    Range src = read_source(&cursor);
-    ar->proc_pos = cursor.pos;
-    uint64_t val = read_range(vm, src, ar->proc_pos);
+static ArAction exec_return_result(CommandContext *context) {
+    ActivationRecord *ar = context->write_ar;
+    Range src = read_source(&context->operands);
+    command_context_commit_operands(context);
+    uint64_t val = read_range(context->vm, src, context->operands.pos);
     printf("[RETURN RESULT] val=%llu\n", (unsigned long long)val);
 
     if (ar->prev) {
         ar->prev->has_result = 1;
         ar->prev->result_value = val;
     } else {
-        vm->has_result = 1;
-        vm->result_value = val;
+        context->vm->has_result = 1;
+        context->vm->result_value = val;
     }
 
     return AR_NOP;
 }
 
 // Builtin: RESIZE (0x0C)
-static ArAction exec_resize(VM *vm) {
-    ActivationRecord *ar = vm->current_ar;
-    Register *proc = vm_get_register(vm, ar->proc_reg);
-    BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
-
-    RegisterSelector target = read_register_selector(&cursor);
-    Range size_source = read_source(&cursor);
-    ar->proc_pos = cursor.pos;
+static ArAction exec_resize(CommandContext *context) {
+    RegisterSelector target = read_register_selector(&context->operands);
+    Range size_source = read_source(&context->operands);
+    command_context_commit_operands(context);
 
     if (target.reg_class != REG_GLOBAL) {
         fprintf(stderr,
                 "FATAL: RESIZE supports only global registers "
-                "(class=%u, pos=%llu)\n",
-                target.reg_class, (unsigned long long)ar->proc_pos);
+                "(class=%u, pos=%zu)\n",
+                target.reg_class, context->operands.pos);
         exit(1);
     }
 
-    uint64_t new_size = read_range(vm, size_source, ar->proc_pos);
+    uint64_t new_size = read_range(context->vm, size_source,
+                                   context->operands.pos);
     size_t new_size_bits = (size_t)new_size;
     if ((uint64_t)new_size_bits != new_size) {
         fprintf(stderr,
                 "FATAL: register size does not fit size_t "
-                "(size=%llu, pos=%llu)\n",
+                "(size=%llu, pos=%zu)\n",
                 (unsigned long long)new_size,
-                (unsigned long long)ar->proc_pos);
+                context->operands.pos);
         exit(1);
     }
 
-    vm_resize_register(vm, target.reg_num, new_size_bits);
+    vm_resize_register(context->vm, target.reg_num, new_size_bits);
     printf("[RESIZE] reg%u -> %llu bits\n",
            target.reg_num, (unsigned long long)new_size);
     return AR_NOP;
 }
 
 // Builtin: END CALL (0x0B)
-static ArAction exec_end_call(VM *vm, uint64_t next0) {
-    ActivationRecord *ar = vm->current_ar;
+static ArAction exec_end_call(CommandContext *context) {
+    ActivationRecord *ar = context->write_ar;
 
     if (!ar->prev) {
-        vm->current_ar = NULL;
-        vm->halted = 1;
+        context->vm->current_ar = NULL;
+        context->vm->halted = 1;
         printf("[EXIT] Halted.\n");
         return AR_POP;
     }
 
     ActivationRecord *caller = ar->prev;
     if (ar->shares_rs)
-        caller->rs_ptr = next0;
+        caller->rs_ptr = context->node.next0;
     if (ar->shares_proc)
         caller->proc_pos = ar->proc_pos;
 
-    vm->current_ar = caller;
+    context->vm->current_ar = caller;
     return AR_POP;
 }
 
-static ArAction exec_builtin(VM *vm, uint16_t cmd, uint64_t next0) {
-    switch (cmd) {
-        case 0x04: return exec_compute(vm);
-        case 0x05: return exec_copy(vm);
-        case 0x06: return exec_call_new_proc(vm, next0);
-        case 0x07: return exec_call_new_rs(vm, next0);
-        case 0x08: return exec_call_new_both(vm, next0);
-        case 0x09: return exec_return_result(vm);
-        case 0x0B: return exec_end_call(vm, next0);
-        case 0x0C: return exec_resize(vm);
+static ArAction exec_builtin(CommandContext *context) {
+    switch (context->node.data) {
+        case 0x04: return exec_compute(context);
+        case 0x05: return exec_copy(context);
+        case 0x06: return exec_call_new_proc(context);
+        case 0x07: return exec_call_new_rs(context);
+        case 0x08: return exec_call_new_both(context);
+        case 0x09: return exec_return_result(context);
+        case 0x0B: return exec_end_call(context);
+        case 0x0C: return exec_resize(context);
         default:
-            fprintf(stderr, "FATAL: unknown builtin 0x%X\n", cmd);
-            vm->halted = 1;
+            fprintf(stderr, "FATAL: unknown builtin 0x%X\n",
+                    context->node.data);
+            context->vm->halted = 1;
             return AR_NOP;
     }
 }
@@ -384,7 +370,8 @@ void vm_step(VM *vm) {
     if (!ar) { vm->halted = 1; return; }
 
     Register *rs = vm_get_register(vm, ar->rs_reg);
-    Node node = read_node(rs->bits, ar->rs_ptr);
+    ResolvingNetworkNode node = resolving_network_read_node(rs->bits,
+                                                            ar->rs_ptr);
 
     if (node.type != 0) {
         fprintf(stderr, "FATAL: node type %d not implemented\n", node.type);
@@ -398,12 +385,13 @@ void vm_step(VM *vm) {
         BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
         uint64_t bit = bc_read_bits(&cursor, 1);
         ar->proc_pos = cursor.pos;
-        ar->rs_ptr = bit ? node.next1 : node.next0;
+        ar->rs_ptr = resolving_network_next_node(&node, (uint8_t)bit);
         return;
     }
 
-    ActivationRecord *old_ar = ar;
-    ArAction action = exec_builtin(vm, node.data, node.next0);
+    CommandContext context = command_context_create(vm, ar, ar, node);
+    ActivationRecord *old_ar = context.write_ar;
+    ArAction action = exec_builtin(&context);
 
     switch (action) {
         case AR_NOP:

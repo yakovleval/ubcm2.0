@@ -2,6 +2,7 @@
 #define VM_H
 
 #include "bitstream.h"
+#include "resolving_network.h"
 #include <stdint.h>
 
 #define MAX_REGISTERS 256
@@ -37,12 +38,12 @@ typedef struct {
 } VM;
 
 typedef struct {
-    uint8_t  type;    // 0 = builtin, 1 = procedure call
-    uint16_t data;    // command code
-    uint16_t next0;
-    uint16_t next1;
-    uint16_t resolver;
-} Node;
+    VM *vm;
+    ActivationRecord *read_ar;
+    ActivationRecord *write_ar;
+    ResolvingNetworkNode node;
+    BitCursor operands;
+} CommandContext;
 
 VM  *vm_create(void);
 void vm_free(VM *vm);
