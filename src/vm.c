@@ -280,6 +280,45 @@ static ArAction exec_return_result(CommandContext *context) {
     return AR_NOP;
 }
 
+// Builtin: JUMP (0x0A)
+static ArAction exec_jump(CommandContext *context) {
+    Range position_source = read_source(&context->operands);
+    command_context_commit_operands(context);
+
+    uint64_t new_position = read_range(context->vm, position_source,
+                                       context->operands.pos);
+    size_t new_position_bits = (size_t)new_position;
+    if ((uint64_t)new_position_bits != new_position) {
+        fprintf(stderr,
+                "FATAL: JUMP position does not fit size_t "
+                "(position=%llu, pos=%zu)\n",
+                (unsigned long long)new_position,
+                context->operands.pos);
+        exit(1);
+    }
+
+    Register *procedure = vm_get_register(context->vm,
+                                          context->write_ar->proc_reg);
+    if (!procedure) {
+        fprintf(stderr,
+                "FATAL: JUMP procedure register %d not found at pos=%zu\n",
+                context->write_ar->proc_reg, context->operands.pos);
+        exit(1);
+    }
+    if (new_position_bits > procedure->bits->size_bits) {
+        fprintf(stderr,
+                "FATAL: JUMP position out of bounds "
+                "(position=%llu, size=%zu, pos=%zu)\n",
+                (unsigned long long)new_position,
+                procedure->bits->size_bits, context->operands.pos);
+        exit(1);
+    }
+
+    context->write_ar->proc_pos = new_position;
+    printf("[JUMP] -> %llu\n", (unsigned long long)new_position);
+    return AR_NOP;
+}
+
 // Builtin: RESIZE (0x0C)
 static ArAction exec_resize(CommandContext *context) {
     RegisterSelector target = read_register_selector(&context->operands);
@@ -373,6 +412,7 @@ static ArAction exec_builtin(CommandContext *context) {
         case 0x07: return exec_call_new_rs(context);
         case 0x08: return exec_call_new_both(context);
         case 0x09: return exec_return_result(context);
+        case 0x0A: return exec_jump(context);
         case 0x0B: return exec_end_call(context);
         case 0x0C: return exec_resize(context);
         case 0x0D: return exec_get_size(context);

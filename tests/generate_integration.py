@@ -36,6 +36,10 @@ def get_size(reg_num, destination):
     return "1101" + register_selector(reg_num) + destination
 
 
+def jump(position):
+    return "1010" + immediate(position)
+
+
 def copy(source, destination):
     return "0101" + source + destination
 
@@ -212,6 +216,23 @@ def generate_get_register_size_1101():
     write_case("get_register_size_1101", program, network)
 
 
+def generate_jump_to_position_1010():
+    skipped = resize(20, 13)
+    exit_offset = 0
+    for _ in range(8):
+        prefix = jump(exit_offset)
+        new_offset = len(prefix) + len(skipped)
+        if new_offset == exit_offset:
+            break
+        exit_offset = new_offset
+    else:
+        raise RuntimeError("jump target offset did not converge")
+
+    program = prefix + skipped + "1011"
+    network = build_network({"1010": 0x0A, "1011": 0x0B, "1100": 0x0C})
+    write_case("jump_to_position_1010", program, network)
+
+
 def generate_return_result_1001():
     program = return_immediate(42) + "1011"
     network = build_network({"1001": 0x09, "1011": 0x0B})
@@ -236,6 +257,7 @@ def main():
     generate_call_new_procedure_and_network_1000()
     generate_resize_register_1100()
     generate_get_register_size_1101()
+    generate_jump_to_position_1010()
     generate_return_result_1001()
     generate_copy_value_0101()
 

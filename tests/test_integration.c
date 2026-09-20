@@ -93,6 +93,11 @@ int main(int argc, char **argv) {
         if (result_count != 0)
             fail(case_name, "GET SIZE unexpectedly returned a CALL result");
         check_get_size(vm, case_name);
+    } else if (strcmp(case_name, "jump_to_position_1010") == 0) {
+        if (result_count != 0)
+            fail(case_name, "JUMP unexpectedly returned a CALL result");
+        if (vm_get_register(vm, 20) != NULL)
+            fail(case_name, "JUMP did not skip the RESIZE command");
     } else if (strcmp(case_name, "return_result_1001") == 0) {
         if (result_count != 0)
             fail(case_name, "root result appeared as a CALL result");
