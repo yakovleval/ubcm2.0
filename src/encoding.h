@@ -37,12 +37,14 @@ typedef struct {
 
 typedef struct {
     Address  addr;
-    uint64_t size_bits;  // размер диапазона (0 для immediate)
+    uint64_t size_bits;  // размер диапазона или immediate-значения
 } Range;
 
 Range    read_source(BitStream *bs);
-uint64_t read_range(VM *vm, Range r);
-void     write_range(VM *vm, Address dst, uint64_t value, uint64_t size);
+uint64_t read_range(VM *vm, Range r, size_t stream_pos);
+void     write_range(VM *vm, Address dst, uint64_t value, uint64_t size_bits,
+                     size_t stream_pos);
+void     copy_range(VM *vm, Range src, Address dst, size_t stream_pos);
 
 typedef struct {
     uint8_t  type;       // VALUE_INT / VALUE_FLOAT
@@ -50,8 +52,10 @@ typedef struct {
     double   f;          // для float
 } Value;
 
-uint64_t read_value_sized(VM *vm, Address addr, uint64_t size_bits);
-void     write_value_sized(VM *vm, Address addr, uint64_t value, uint64_t size_bits);
+uint64_t read_value_sized(VM *vm, Address addr, uint64_t size_bits,
+                          size_t stream_pos);
+void     write_value_sized(VM *vm, Address addr, uint64_t value,
+                           uint64_t size_bits, size_t stream_pos);
 
 // ===== Размеры и адреса =====
 uint64_t read_variable_size(BitStream *bs);
@@ -60,8 +64,9 @@ void     write_variable_size(BitStream *bs, uint64_t value);
 // ===== Адреса =====
 RegisterSelector read_register_selector(BitStream *bs);
 Address  read_address(BitStream *bs);
-uint64_t read_by_address(VM *vm, Address addr);
-void     write_by_address(VM *vm, Address addr, uint64_t value);
+uint64_t read_by_address(VM *vm, Address addr, size_t stream_pos);
+void     write_by_address(VM *vm, Address addr, uint64_t value,
+                          size_t stream_pos);
 
 // ===== Целые нефиксированного размера =====
 uint64_t read_int(BitStream *bs);

@@ -24,8 +24,16 @@ def direct_address(reg_num, offset=0):
     return "10" + register_selector(reg_num) + variable_size(offset)
 
 
+def direct_source(reg_num, offset, size_bits):
+    return direct_address(reg_num, offset) + variable_size(size_bits)
+
+
 def resize(reg_num, size_bits):
     return "1100" + register_selector(reg_num) + immediate(size_bits)
+
+
+def copy(source, destination):
+    return "0101" + source + destination
 
 
 def return_immediate(value):
@@ -167,11 +175,24 @@ def generate_resize_register_1100():
     write_case("resize_register_1100", program, network)
 
 
+def generate_copy_value_0101():
+    value = int("1011010010110", 2)
+    program = (
+        resize(20, 20)
+        + copy(immediate(value), direct_address(20, 0))
+        + copy(direct_source(20, 0, 13), direct_address(20, 7))
+        + "1011"
+    )
+    network = build_network({"0101": 0x05, "1011": 0x0B, "1100": 0x0C})
+    write_case("copy_value_0101", program, network)
+
+
 def main():
     generate_call_new_procedure_0110()
     generate_call_new_network_0111()
     generate_call_new_procedure_and_network_1000()
     generate_resize_register_1100()
+    generate_copy_value_0101()
 
 
 if __name__ == "__main__":

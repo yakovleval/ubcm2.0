@@ -161,12 +161,8 @@ static ArAction exec_compute(VM *vm) {
     Address dst = read_address(bs);   // приёмник — без размера
     ar->proc_pos = bs->pos;
 
-    if (dst.mode == ADDR_IMMEDIATE) {
-        fprintf(stderr, "FATAL: immediate for dst\n"); exit(1);
-    }
-
-    uint64_t v1 = read_range(vm, src1);
-    uint64_t v2 = read_range(vm, src2);
+    uint64_t v1 = read_range(vm, src1, ar->proc_pos);
+    uint64_t v2 = read_range(vm, src2, ar->proc_pos);
     uint64_t result = 0;
     switch (opcode) {
         case 0: result = v1 + v2; break;
@@ -177,12 +173,28 @@ static ArAction exec_compute(VM *vm) {
 
     uint64_t rsize = src1.size_bits > src2.size_bits
                    ? src1.size_bits : src2.size_bits;
-    write_range(vm, dst, result, rsize);
+    write_range(vm, dst, result, rsize, ar->proc_pos);
 
     printf("[COMPUTE] op=%llu -> reg%d[%llu] = %llu (size=%llu)\n",
            (unsigned long long)opcode, dst.reg_num,
            (unsigned long long)dst.offset,
            (unsigned long long)result, (unsigned long long)rsize);
+    return AR_NOP;
+}
+
+// Builtin: COPY (0x05)
+static ArAction exec_copy(VM *vm) {
+    ActivationRecord *ar = vm->current_ar;
+    Register *proc = vm_get_register(vm, ar->proc_reg);
+    BitStream *bs = proc->data;
+    bs_seek(bs, ar->proc_pos);
+
+    Range src = read_source(bs);
+    Address dst = read_address(bs);
+    ar->proc_pos = bs->pos;
+
+    copy_range(vm, src, dst, ar->proc_pos);
+    printf("[COPY] %llu bits\n", (unsigned long long)src.size_bits);
     return AR_NOP;
 }
 
@@ -219,7 +231,7 @@ static ArAction exec_call_new_rs(VM *vm, uint64_t next0) {
     bs_seek(bs, ar->proc_pos);
 
     Address src = read_address(bs);
-    uint64_t entry = read_by_address(vm, src);
+    uint64_t entry = read_by_address(vm, src, bs->pos);
     ar->proc_pos = bs->pos;
     ar->rs_ptr   = next0;
 
@@ -274,7 +286,7 @@ static ArAction exec_return(VM *vm, uint64_t next0) {
 
     Range src = read_source(bs);
     ar->proc_pos = bs->pos;
-    uint64_t val = read_range(vm, src);
+    uint64_t val = read_range(vm, src, ar->proc_pos);
     printf("[RETURN] val=%llu\n", (unsigned long long)val);
 
     if (!ar->prev) { vm->halted = 1; return AR_RETURN; }
@@ -309,7 +321,7 @@ static ArAction exec_resize(VM *vm) {
         exit(1);
     }
 
-    uint64_t new_size = read_range(vm, size_source);
+    uint64_t new_size = read_range(vm, size_source, ar->proc_pos);
     size_t new_size_bits = (size_t)new_size;
     if ((uint64_t)new_size_bits != new_size) {
         fprintf(stderr,
@@ -336,6 +348,7 @@ static ArAction exec_exit(VM *vm) {
 static ArAction exec_builtin(VM *vm, uint16_t cmd, uint64_t next0) {
     switch (cmd) {
         case 0x04: return exec_compute(vm);
+        case 0x05: return exec_copy(vm);
         case 0x06: return exec_call_new_proc(vm, next0);
         case 0x07: return exec_call_new_rs(vm, next0);
         case 0x08: return exec_call_new_both(vm, next0);

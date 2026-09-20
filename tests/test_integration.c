@@ -25,6 +25,18 @@ static void check_resize(VM *vm, const char *case_name) {
     }
 }
 
+static void check_copy(VM *vm, const char *case_name) {
+    Register *reg = vm_get_register(vm, 20);
+    if (!reg)
+        fail(case_name, "destination register 20 was not created");
+    if (reg->data->size_bits != 20)
+        fail(case_name, "destination register has an unexpected bit size");
+
+    bs_seek(reg->data, 0);
+    if (bs_read_bits(reg->data, 20) != UINT64_C(0xB5696))
+        fail(case_name, "COPY produced unexpected destination bits");
+}
+
 int main(int argc, char **argv) {
     if (argc != 4) {
         fprintf(stderr,
@@ -63,6 +75,10 @@ int main(int argc, char **argv) {
         if (result_count != 0)
             fail(case_name, "RESIZE unexpectedly returned a CALL result");
         check_resize(vm, case_name);
+    } else if (strcmp(case_name, "copy_value_0101") == 0) {
+        if (result_count != 0)
+            fail(case_name, "COPY unexpectedly returned a CALL result");
+        check_copy(vm, case_name);
     } else if (strcmp(case_name, "call_new_procedure_and_network_1000") == 0) {
         if (result_count != 2)
             fail(case_name, "CALL 1000 did not produce exactly two results");
