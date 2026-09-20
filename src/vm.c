@@ -56,7 +56,10 @@ static int load_file_into_register(VM *vm, int reg_num, const char *filename) {
     fseek(f, 0, SEEK_SET);
     vm_create_register(vm, reg_num, size * 8);
     Register *reg = vm_get_register(vm, reg_num);
-    fread(reg->data->data, 1, size, f);
+    if (fread(reg->data->data, 1, size, f) != size) {
+        fclose(f);
+        fprintf(stderr, "FATAL: error reading file: %s\n", filename ? filname: "(null)"); exit(1);
+    }
     fclose(f);
     return 0;
 }

@@ -1,4 +1,6 @@
 build/
+debug/
+release/
 AGENTS.md
 *.sw?
 *.ubc
