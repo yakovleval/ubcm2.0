@@ -312,6 +312,38 @@ static ArAction exec_resize(CommandContext *context) {
     return AR_NOP;
 }
 
+// Builtin: GET SIZE (0x0D)
+static ArAction exec_get_size(CommandContext *context) {
+    RegisterSelector source = read_register_selector(&context->operands);
+    Address destination = read_address(&context->operands);
+    command_context_commit_operands(context);
+
+    if (source.reg_class != REG_GLOBAL) {
+        fprintf(stderr,
+                "FATAL: GET SIZE supports only global registers "
+                "(class=%u, pos=%zu)\n",
+                source.reg_class, context->operands.pos);
+        exit(1);
+    }
+
+    Register *reg = vm_get_register(context->vm, source.reg_num);
+    size_t host_size = reg ? reg->bits->size_bits : 0;
+    uint64_t size_bits = (uint64_t)host_size;
+    if ((size_t)size_bits != host_size) {
+        fprintf(stderr,
+                "FATAL: register size does not fit uint64_t "
+                "(pos=%zu)\n",
+                context->operands.pos);
+        exit(1);
+    }
+
+    write_by_address(context->vm, destination, size_bits,
+                     context->operands.pos);
+    printf("[GET SIZE] reg%u -> %llu bits\n",
+           source.reg_num, (unsigned long long)size_bits);
+    return AR_NOP;
+}
+
 // Builtin: END CALL (0x0B)
 static ArAction exec_end_call(CommandContext *context) {
     ActivationRecord *ar = context->write_ar;
@@ -343,6 +375,7 @@ static ArAction exec_builtin(CommandContext *context) {
         case 0x09: return exec_return_result(context);
         case 0x0B: return exec_end_call(context);
         case 0x0C: return exec_resize(context);
+        case 0x0D: return exec_get_size(context);
         default:
             fprintf(stderr, "FATAL: unknown builtin 0x%X\n",
                     context->node.data);

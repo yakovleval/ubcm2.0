@@ -37,6 +37,20 @@ static void check_copy(VM *vm, const char *case_name) {
         fail(case_name, "COPY produced unexpected destination bits");
 }
 
+static void check_get_size(VM *vm, const char *case_name) {
+    Register *reg = vm_get_register(vm, 21);
+    if (!reg)
+        fail(case_name, "destination register 21 was not created");
+    if (reg->bits->size_bits != 128)
+        fail(case_name, "destination register has an unexpected bit size");
+
+    BitCursor cursor = bc_create(reg->bits, 0);
+    if (bc_read_bits(&cursor, 64) != 13)
+        fail(case_name, "GET SIZE returned the wrong existing-register size");
+    if (bc_read_bits(&cursor, 64) != 0)
+        fail(case_name, "GET SIZE returned a nonzero missing-register size");
+}
+
 int main(int argc, char **argv) {
     if (argc != 4) {
         fprintf(stderr,
@@ -75,6 +89,10 @@ int main(int argc, char **argv) {
         if (result_count != 0)
             fail(case_name, "RESIZE unexpectedly returned a CALL result");
         check_resize(vm, case_name);
+    } else if (strcmp(case_name, "get_register_size_1101") == 0) {
+        if (result_count != 0)
+            fail(case_name, "GET SIZE unexpectedly returned a CALL result");
+        check_get_size(vm, case_name);
     } else if (strcmp(case_name, "return_result_1001") == 0) {
         if (result_count != 0)
             fail(case_name, "root result appeared as a CALL result");
