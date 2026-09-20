@@ -1,5 +1,5 @@
 CC = gcc
-SRC = src/main.c src/vm.c src/bitstream.c src/encoding.c
+SRC = src/main.c src/vm.c src/bitstream.c src/encoding.c src/addressing.c
 TARGET = ubcm
 
 COMMON_CFLAGS = -Wall -Wextra -Werror -std=c11

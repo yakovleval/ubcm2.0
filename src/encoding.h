@@ -2,7 +2,6 @@
 #define ENCODING_H
 
 #include "bitstream.h"
-#include "vm.h"
 #include <stdint.h>
 
 // ===== Режимы адресации =====
@@ -41,21 +40,12 @@ typedef struct {
 } Range;
 
 Range    read_source(BitCursor *cursor);
-uint64_t read_range(VM *vm, Range r, size_t stream_pos);
-void     write_range(VM *vm, Address dst, uint64_t value, uint64_t size_bits,
-                     size_t stream_pos);
-void     copy_range(VM *vm, Range src, Address dst, size_t stream_pos);
 
 typedef struct {
     uint8_t  type;       // VALUE_INT / VALUE_FLOAT
     uint64_t i;          // для int
     double   f;          // для float
 } Value;
-
-uint64_t read_value_sized(VM *vm, Address addr, uint64_t size_bits,
-                          size_t stream_pos);
-void     write_value_sized(VM *vm, Address addr, uint64_t value,
-                           uint64_t size_bits, size_t stream_pos);
 
 // ===== Размеры и адреса =====
 uint64_t read_variable_size(BitCursor *cursor);
@@ -64,9 +54,6 @@ void     write_variable_size(BitCursor *cursor, uint64_t value);
 // ===== Адреса =====
 RegisterSelector read_register_selector(BitCursor *cursor);
 Address  read_address(BitCursor *cursor);
-uint64_t read_by_address(VM *vm, Address addr, size_t stream_pos);
-void     write_by_address(VM *vm, Address addr, uint64_t value,
-                          size_t stream_pos);
 
 // ===== Целые нефиксированного размера =====
 uint64_t read_int(BitCursor *cursor);

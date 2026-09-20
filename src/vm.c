@@ -1,4 +1,5 @@
 #include "vm.h"
+#include "addressing.h"
 #include "encoding.h"
 #include <stdio.h>
 #include <stdlib.h>
