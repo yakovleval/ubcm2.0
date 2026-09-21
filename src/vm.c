@@ -135,22 +135,24 @@ uint64_t vm_get_uint64(VM *vm, int reg_num) {
 }
 
 static CommandContext command_context_create(VM *vm,
+                                             ActivationRecord *execution_ar,
                                              ActivationRecord *read_ar,
                                              ActivationRecord *write_ar,
                                              ResolvingNetworkNode node) {
-    Register *proc = vm_get_register(vm, read_ar->proc_reg);
+    Register *proc = vm_get_register(vm, execution_ar->proc_reg);
     CommandContext context = {
         .vm = vm,
+        .execution_ar = execution_ar,
         .read_ar = read_ar,
         .write_ar = write_ar,
         .node = node,
-        .operands = bc_create(proc->bits, read_ar->proc_pos),
+        .operands = bc_create(proc->bits, execution_ar->proc_pos),
     };
     return context;
 }
 
 static void command_context_commit_operands(CommandContext *context) {
-    context->read_ar->proc_pos = context->operands.pos;
+    context->execution_ar->proc_pos = context->operands.pos;
 }
 
 static ActivationRecord *activation_record_at_depth(VM *vm, uint64_t depth,
@@ -531,10 +533,9 @@ void vm_start(VM *vm, int proc_reg, int rs_reg) {
 void vm_step(VM *vm) {
     if (vm->halted) return;
     ActivationRecord *ar = vm->current_ar;
+    ActivationRecord *old_ar = vm->current_ar;
     if (!ar) { vm->halted = 1; return; }
 
-    ActivationRecord *read_ar = vm->prefix_read_ar
-                              ? vm->prefix_read_ar : ar;
     Register *rs = vm_get_register(vm, ar->rs_reg);
     ResolvingNetworkNode node = resolving_network_read_node(rs->bits,
                                                             ar->rs_ptr);
@@ -545,44 +546,75 @@ void vm_step(VM *vm) {
         return;
     }
 
-    // CHOICE — обрабатываем отдельно (не в exec_builtin)
-    if (node.data == 0x03) {
-        Register *proc = vm_get_register(vm, read_ar->proc_reg);
-        BitCursor cursor = bc_create(proc->bits, read_ar->proc_pos);
-        uint64_t bit = bc_read_bits(&cursor, 1);
-        read_ar->proc_pos = cursor.pos;
-        ar->rs_ptr = resolving_network_next_node(&node, (uint8_t)bit);
-        return;
-    }
-
-    int is_prefix = node.data <= 0x02;
-    ActivationRecord *write_ar = vm->prefix_write_ar
-                               ? vm->prefix_write_ar : ar;
-    CommandContext context = command_context_create(
-        vm, read_ar, is_prefix ? ar : write_ar, node);
-    ActivationRecord *old_ar = context.write_ar;
     ArAction action;
-    if (!is_prefix && vm->has_prefix_condition && !vm->prefix_condition) {
-        skip_builtin(&context);
-        action = AR_NOP;
-    } else {
-        action = exec_builtin(&context);
+    CommandContext context;
+    switch (node.data) {
+        case 0:
+        case 1:
+        case 2:
+            context = command_context_create(vm, ar, ar, ar, node);
+            action = exec_builtin(&context);
+        break;
+        case 3:
+            Register *proc = vm_get_register(vm, ar->proc_reg);
+            BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
+            uint64_t bit = bc_read_bits(&cursor, 1);
+            ar->proc_pos = cursor.pos;
+            ar->rs_ptr = resolving_network_next_node(&node, (uint8_t)bit);
+            return;
+        default:
+            int should_skip = vm->has_prefix_condition && !vm->prefix_condition;
+            if (should_skip) {
+                context = command_context_create(vm, ar, ar, ar, node);
+                skip_builtin(&context);
+                action = AR_NOP;
+            } else {
+                ActivationRecord *prefix_read_ar = vm->prefix_read_ar ? vm->prefix_read_ar : ar;
+                ActivationRecord *prefix_write_ar = vm->prefix_write_ar ? vm->prefix_write_ar : ar;
+                context = command_context_create(
+                    vm, ar, prefix_read_ar, prefix_write_ar, node);
+                action = exec_builtin(&context);
+            }
+            vm->prefix_read_ar = NULL;
+            vm->prefix_write_ar = NULL;
+            vm->prefix_condition = 0;
+            vm->has_prefix_condition = 0;
+        break;
     }
-
-    if (!is_prefix) {
-        vm->prefix_read_ar = NULL;
-        vm->prefix_write_ar = NULL;
-        vm->prefix_condition = 0;
-        vm->has_prefix_condition = 0;
-    }
+//    // CHOICE — обрабатываем отдельно (не в exec_builtin)
+//    if (node.data == 0x03) {
+//        Register *proc = vm_get_register(vm, read_ar->proc_reg);
+//        BitCursor cursor = bc_create(proc->bits, read_ar->proc_pos);
+//        uint64_t bit = bc_read_bits(&cursor, 1);
+//        read_ar->proc_pos = cursor.pos;
+//        ar->rs_ptr = resolving_network_next_node(&node, (uint8_t)bit);
+//        return;
+//    }
+//
+//    int is_prefix = node.data <= 0x02;
+//    ActivationRecord *write_ar = vm->prefix_write_ar
+//                               ? vm->prefix_write_ar : ar;
+//    CommandContext context = command_context_create(
+//        vm, read_ar, is_prefix ? ar : write_ar, node);
+//    ActivationRecord *old_ar = context.write_ar;
+//    ArAction action;
+//    if (!is_prefix && vm->has_prefix_condition && !vm->prefix_condition) {
+//        skip_builtin(&context);
+//        action = AR_NOP;
+//    } else {
+//        action = exec_builtin(&context);
+//    }
+//
+//    if (!is_prefix) {
+//        vm->prefix_read_ar = NULL;
+//        vm->prefix_write_ar = NULL;
+//        vm->prefix_condition = 0;
+//        vm->has_prefix_condition = 0;
+//    }
 
     switch (action) {
         case AR_NOP:
-            if (!vm->halted) {
-                old_ar->rs_ptr = node.next0;
-                if (ar != old_ar)
-                    ar->rs_ptr = node.next0;
-            }
+                ar->rs_ptr = node.next0;
             break;
         case AR_CALL:
             // CALL: caller->rs_ptr и callee уже настроены внутри

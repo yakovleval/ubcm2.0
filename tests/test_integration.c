@@ -107,9 +107,16 @@ int main(int argc, char **argv) {
         if (result_count != 0)
             fail(case_name, "COPY unexpectedly returned a CALL result");
         check_copy(vm, case_name);
-    } else if (strcmp(case_name, "read_activation_record_0000") == 0) {
-        if (result_count != 1 || results[0] != 42)
-            fail(case_name, "read prefix used the wrong activation record");
+    } else if (strcmp(case_name,
+                      "accumulated_prefixes_compute_0000_0001") == 0) {
+        if (result_count != 0)
+            fail(case_name, "COMPUTE unexpectedly returned a result");
+        Register *reg20 = vm_get_register(vm, 20);
+        if (!reg20)
+            fail(case_name, "COMPUTE destination register is missing");
+        BitCursor cursor = bc_create(reg20->bits, 0);
+        if (bc_read_bits(&cursor, 3) != 7)
+            fail(case_name, "prefixed COMPUTE returned an unexpected value");
     } else if (strcmp(case_name, "write_activation_record_0001") == 0) {
         if (result_count != 0)
             fail(case_name, "write prefix unexpectedly returned a result");

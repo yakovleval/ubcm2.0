@@ -43,6 +43,7 @@ typedef struct {
 
 typedef struct {
     VM *vm;
+    ActivationRecord *execution_ar;
     ActivationRecord *read_ar;
     ActivationRecord *write_ar;
     ResolvingNetworkNode node;

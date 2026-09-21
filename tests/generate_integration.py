@@ -2,6 +2,8 @@ from pathlib import Path
 
 
 OUTPUT_DIR = Path(__file__).parent
+REG_LOCAL = "01"
+REG_GLOBAL = "11"
 
 
 def variable_size(value):
@@ -33,20 +35,31 @@ def conditional_prefix(reference):
     return "0010" + reference
 
 
-def register_selector(reg_num):
-    return "11" + format(reg_num, "05b")
+def register_selector(reg_num, reg_class=REG_GLOBAL):
+    return reg_class + format(reg_num, "05b")
 
 
-def direct_address(reg_num, offset=0):
-    return "10" + register_selector(reg_num) + variable_size(offset)
+def direct_address(reg_num, offset=0, reg_class=REG_GLOBAL):
+    return (
+        "10"
+        + register_selector(reg_num, reg_class)
+        + variable_size(offset)
+    )
 
 
-def direct_source(reg_num, offset, size_bits):
-    return direct_address(reg_num, offset) + variable_size(size_bits)
+def direct_source(reg_num, offset, size_bits, reg_class=REG_GLOBAL):
+    return (
+        direct_address(reg_num, offset, reg_class)
+        + variable_size(size_bits)
+    )
 
 
-def resize(reg_num, size_bits):
-    return "1100" + register_selector(reg_num) + immediate(size_bits)
+def resize(reg_num, size_bits, reg_class=REG_GLOBAL):
+    return (
+        "1100"
+        + register_selector(reg_num, reg_class)
+        + immediate(size_bits)
+    )
 
 
 def get_size(reg_num, destination):
@@ -59,6 +72,16 @@ def jump(position):
 
 def copy(source, destination):
     return "0101" + source + destination
+
+
+def compute(opcode, source1, source2, destination):
+    return (
+        "0100"
+        + format(opcode, "05b")
+        + source1
+        + source2
+        + destination
+    )
 
 
 def return_immediate(value):
@@ -268,23 +291,60 @@ def generate_copy_value_0101():
     write_case("copy_value_0101", program, network)
 
 
-def generate_read_prefix_0000():
-    subroutine = read_prefix(1) + "1011"
-    program = procedure_with_subroutine(
-        lambda offset: (
-            "0110" + direct_address(1, offset)
-            + return_immediate(42)
-            + "1011"
-        ),
-        subroutine,
+def generate_accumulated_prefixes_compute_0000_0001():
+    inner = (
+        read_prefix(1)
+        + write_prefix(2)
+        + compute(
+            0,
+            direct_source(11, 0, 3, REG_LOCAL),
+            direct_source(12, 0, 3, REG_LOCAL),
+            direct_address(10, 0, REG_LOCAL),
+        )
+        + "1011"
     )
+    middle_offset = 0
+    inner_offset = 0
+    for _ in range(16):
+        root = (
+            resize(20, 3)
+            + resize(10, 3, REG_LOCAL)
+            + "0110" + direct_address(1, middle_offset)
+            + copy(
+                direct_source(10, 0, 3, REG_LOCAL),
+                direct_address(20, 0),
+            )
+            + "1011"
+        )
+        middle = (
+            resize(11, 3, REG_LOCAL)
+            + resize(12, 3, REG_LOCAL)
+            + copy(immediate(5), direct_address(11, 0, REG_LOCAL))
+            + copy(immediate(2), direct_address(12, 0, REG_LOCAL))
+            + "0110" + direct_address(1, inner_offset)
+            + "1011"
+        )
+        new_middle_offset = len(root)
+        new_inner_offset = len(root) + len(middle)
+        if (new_middle_offset == middle_offset
+                and new_inner_offset == inner_offset):
+            break
+        middle_offset = new_middle_offset
+        inner_offset = new_inner_offset
+    else:
+        raise RuntimeError("prefix test offsets did not converge")
+
+    program = root + middle + inner
     network = build_network({
         "0000": 0x00,
+        "0001": 0x01,
+        "0100": 0x04,
+        "0101": 0x05,
         "0110": 0x06,
-        "1001": 0x09,
         "1011": 0x0B,
+        "1100": 0x0C,
     })
-    write_case("read_activation_record_0000", program, network)
+    write_case("accumulated_prefixes_compute_0000_0001", program, network)
 
 
 def generate_write_prefix_0001():
@@ -345,7 +405,7 @@ def main():
     generate_jump_to_position_1010()
     generate_return_result_1001()
     generate_copy_value_0101()
-    generate_read_prefix_0000()
+    generate_accumulated_prefixes_compute_0000_0001()
     generate_write_prefix_0001()
     generate_conditional_prefix_0010()
 
