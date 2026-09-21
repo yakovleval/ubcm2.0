@@ -107,6 +107,22 @@ int main(int argc, char **argv) {
         if (result_count != 0)
             fail(case_name, "COPY unexpectedly returned a CALL result");
         check_copy(vm, case_name);
+    } else if (strcmp(case_name, "read_activation_record_0000") == 0) {
+        if (result_count != 1 || results[0] != 42)
+            fail(case_name, "read prefix used the wrong activation record");
+    } else if (strcmp(case_name, "write_activation_record_0001") == 0) {
+        if (result_count != 0)
+            fail(case_name, "write prefix unexpectedly returned a result");
+        if (vm_get_register(vm, 20) != NULL)
+            fail(case_name, "write prefix did not redirect JUMP to caller");
+    } else if (strcmp(case_name, "conditional_execution_0010") == 0) {
+        if (result_count != 0)
+            fail(case_name, "conditional prefix unexpectedly returned a result");
+        if (vm_get_register(vm, 21) != NULL)
+            fail(case_name, "false conditional prefix executed command");
+        Register *reg22 = vm_get_register(vm, 22);
+        if (!reg22 || reg22->bits->size_bits != 9)
+            fail(case_name, "true conditional prefix skipped command");
     } else if (strcmp(case_name, "call_new_procedure_and_network_1000") == 0) {
         if (result_count != 2)
             fail(case_name, "CALL 1000 did not produce exactly two results");

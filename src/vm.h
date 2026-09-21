@@ -32,6 +32,10 @@ typedef struct ActivationRecord {
 typedef struct {
     Register *registers[MAX_REGISTERS];
     ActivationRecord *current_ar;
+    ActivationRecord *prefix_read_ar;
+    ActivationRecord *prefix_write_ar;
+    int prefix_condition;
+    int has_prefix_condition;
     uint64_t result_value;
     int has_result;
     int halted;

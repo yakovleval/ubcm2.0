@@ -16,6 +16,23 @@ def immediate(value):
     return "00" + variable_size(bit_count) + format(value, f"0{bit_count}b")
 
 
+def integer(value):
+    bit_count = max(1, value.bit_length())
+    return variable_size(bit_count) + format(value, f"0{bit_count}b")
+
+
+def read_prefix(depth):
+    return "0000" + integer(depth)
+
+
+def write_prefix(depth):
+    return "0001" + integer(depth)
+
+
+def conditional_prefix(reference):
+    return "0010" + reference
+
+
 def register_selector(reg_num):
     return "11" + format(reg_num, "05b")
 
@@ -251,6 +268,74 @@ def generate_copy_value_0101():
     write_case("copy_value_0101", program, network)
 
 
+def generate_read_prefix_0000():
+    subroutine = read_prefix(1) + "1011"
+    program = procedure_with_subroutine(
+        lambda offset: (
+            "0110" + direct_address(1, offset)
+            + return_immediate(42)
+            + "1011"
+        ),
+        subroutine,
+    )
+    network = build_network({
+        "0000": 0x00,
+        "0110": 0x06,
+        "1001": 0x09,
+        "1011": 0x0B,
+    })
+    write_case("read_activation_record_0000", program, network)
+
+
+def generate_write_prefix_0001():
+    subroutine_offset = 0
+    exit_offset = 0
+    for _ in range(16):
+        main = (
+            "0110" + direct_address(1, subroutine_offset)
+            + resize(20, 13)
+        )
+        new_exit_offset = len(main)
+        subroutine = write_prefix(1) + jump(new_exit_offset) + "1011"
+        new_subroutine_offset = new_exit_offset + 4
+        if (new_exit_offset == exit_offset
+                and new_subroutine_offset == subroutine_offset):
+            break
+        exit_offset = new_exit_offset
+        subroutine_offset = new_subroutine_offset
+    else:
+        raise RuntimeError("write-prefix offsets did not converge")
+
+    program = main + "1011" + subroutine
+    network = build_network({
+        "0001": 0x01,
+        "0110": 0x06,
+        "1010": 0x0A,
+        "1011": 0x0B,
+        "1100": 0x0C,
+    })
+    write_case("write_activation_record_0001", program, network)
+
+
+def generate_conditional_prefix_0010():
+    program = (
+        resize(20, 1)
+        + copy(immediate(0), direct_address(20, 0))
+        + conditional_prefix(direct_address(20, 0))
+        + resize(21, 7)
+        + conditional_prefix(immediate(1))
+        + resize(22, 9)
+        + "1011"
+    )
+    network = build_network({
+        "0010": 0x02,
+        "0101": 0x05,
+        "1011": 0x0B,
+        "1100": 0x0C,
+    })
+    write_case("conditional_execution_0010", program, network)
+
+
 def main():
     generate_call_new_procedure_0110()
     generate_call_new_network_0111()
@@ -260,6 +345,9 @@ def main():
     generate_jump_to_position_1010()
     generate_return_result_1001()
     generate_copy_value_0101()
+    generate_read_prefix_0000()
+    generate_write_prefix_0001()
+    generate_conditional_prefix_0010()
 
 
 if __name__ == "__main__":

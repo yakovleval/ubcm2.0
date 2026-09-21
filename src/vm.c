@@ -153,9 +153,51 @@ static void command_context_commit_operands(CommandContext *context) {
     context->read_ar->proc_pos = context->operands.pos;
 }
 
+static ActivationRecord *activation_record_at_depth(VM *vm, uint64_t depth,
+                                                     size_t stream_pos) {
+    ActivationRecord *ar = vm->current_ar;
+    for (uint64_t index = 0; index < depth; index++) {
+        if (!ar || !ar->prev) {
+            fprintf(stderr,
+                    "FATAL: activation record depth %llu is out of bounds "
+                    "at pos=%zu\n",
+                    (unsigned long long)depth, stream_pos);
+            exit(1);
+        }
+        ar = ar->prev;
+    }
+    return ar;
+}
+
+static ArAction exec_read_prefix(CommandContext *context) {
+    uint64_t depth = read_int(&context->operands);
+    command_context_commit_operands(context);
+    context->vm->prefix_read_ar = activation_record_at_depth(
+        context->vm, depth, context->operands.pos);
+    return AR_NOP;
+}
+
+static ArAction exec_write_prefix(CommandContext *context) {
+    uint64_t depth = read_int(&context->operands);
+    command_context_commit_operands(context);
+    context->vm->prefix_write_ar = activation_record_at_depth(
+        context->vm, depth, context->operands.pos);
+    return AR_NOP;
+}
+
+static ArAction exec_conditional_prefix(CommandContext *context) {
+    Address condition = read_address(&context->operands);
+    command_context_commit_operands(context);
+    context->vm->prefix_condition = read_value_sized(
+        context->vm, condition, 1, context->operands.pos) != 0;
+    context->vm->has_prefix_condition = 1;
+    return AR_NOP;
+}
+
 // Builtin: COMPUTE (0x04)
 static ArAction exec_compute(CommandContext *context) {
     uint64_t opcode = bc_read_bits(&context->operands, 5);
+    // TODO: не все операции принимают два операнда, доработать для 1-арных операций
     Range src1 = read_source(&context->operands);
     Range src2 = read_source(&context->operands);
     Address dst = read_address(&context->operands);
@@ -406,6 +448,9 @@ static ArAction exec_end_call(CommandContext *context) {
 
 static ArAction exec_builtin(CommandContext *context) {
     switch (context->node.data) {
+        case 0x00: return exec_read_prefix(context);
+        case 0x01: return exec_write_prefix(context);
+        case 0x02: return exec_conditional_prefix(context);
         case 0x04: return exec_compute(context);
         case 0x05: return exec_copy(context);
         case 0x06: return exec_call_new_proc(context);
@@ -424,6 +469,48 @@ static ArAction exec_builtin(CommandContext *context) {
     }
 }
 
+static void skip_builtin(CommandContext *context) {
+    switch (context->node.data) {
+        case 0x04:
+            (void)bc_read_bits(&context->operands, 5);
+            (void)read_source(&context->operands);
+            (void)read_source(&context->operands);
+            (void)read_address(&context->operands);
+            break;
+        case 0x05:
+            (void)read_source(&context->operands);
+            (void)read_address(&context->operands);
+            break;
+        case 0x06:
+        case 0x07:
+            (void)read_address(&context->operands);
+            break;
+        case 0x08:
+            (void)read_address(&context->operands);
+            (void)read_address(&context->operands);
+            break;
+        case 0x09:
+        case 0x0A:
+            (void)read_source(&context->operands);
+            break;
+        case 0x0B:
+            break;
+        case 0x0C:
+            (void)read_register_selector(&context->operands);
+            (void)read_source(&context->operands);
+            break;
+        case 0x0D:
+            (void)read_register_selector(&context->operands);
+            (void)read_address(&context->operands);
+            break;
+        default:
+            fprintf(stderr, "FATAL: cannot skip builtin 0x%X at pos=%zu\n",
+                    context->node.data, context->operands.pos);
+            exit(1);
+    }
+    command_context_commit_operands(context);
+}
+
 void vm_start(VM *vm, int proc_reg, int rs_reg) {
     ActivationRecord *ar = calloc(1, sizeof(ActivationRecord));
     ar->proc_reg = proc_reg;
@@ -432,6 +519,10 @@ void vm_start(VM *vm, int proc_reg, int rs_reg) {
     ar->proc_pos = 0;
     ar->prev = NULL;
     vm->current_ar = ar;
+    vm->prefix_read_ar = NULL;
+    vm->prefix_write_ar = NULL;
+    vm->prefix_condition = 0;
+    vm->has_prefix_condition = 0;
     vm->has_result = 0;
     vm->result_value = 0;
     vm->halted = 0;
@@ -442,6 +533,8 @@ void vm_step(VM *vm) {
     ActivationRecord *ar = vm->current_ar;
     if (!ar) { vm->halted = 1; return; }
 
+    ActivationRecord *read_ar = vm->prefix_read_ar
+                              ? vm->prefix_read_ar : ar;
     Register *rs = vm_get_register(vm, ar->rs_reg);
     ResolvingNetworkNode node = resolving_network_read_node(rs->bits,
                                                             ar->rs_ptr);
@@ -454,22 +547,42 @@ void vm_step(VM *vm) {
 
     // CHOICE — обрабатываем отдельно (не в exec_builtin)
     if (node.data == 0x03) {
-        Register *proc = vm_get_register(vm, ar->proc_reg);
-        BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
+        Register *proc = vm_get_register(vm, read_ar->proc_reg);
+        BitCursor cursor = bc_create(proc->bits, read_ar->proc_pos);
         uint64_t bit = bc_read_bits(&cursor, 1);
-        ar->proc_pos = cursor.pos;
+        read_ar->proc_pos = cursor.pos;
         ar->rs_ptr = resolving_network_next_node(&node, (uint8_t)bit);
         return;
     }
 
-    CommandContext context = command_context_create(vm, ar, ar, node);
+    int is_prefix = node.data <= 0x02;
+    ActivationRecord *write_ar = vm->prefix_write_ar
+                               ? vm->prefix_write_ar : ar;
+    CommandContext context = command_context_create(
+        vm, read_ar, is_prefix ? ar : write_ar, node);
     ActivationRecord *old_ar = context.write_ar;
-    ArAction action = exec_builtin(&context);
+    ArAction action;
+    if (!is_prefix && vm->has_prefix_condition && !vm->prefix_condition) {
+        skip_builtin(&context);
+        action = AR_NOP;
+    } else {
+        action = exec_builtin(&context);
+    }
+
+    if (!is_prefix) {
+        vm->prefix_read_ar = NULL;
+        vm->prefix_write_ar = NULL;
+        vm->prefix_condition = 0;
+        vm->has_prefix_condition = 0;
+    }
 
     switch (action) {
         case AR_NOP:
-            if (!vm->halted)
+            if (!vm->halted) {
                 old_ar->rs_ptr = node.next0;
+                if (ar != old_ar)
+                    ar->rs_ptr = node.next0;
+            }
             break;
         case AR_CALL:
             // CALL: caller->rs_ptr и callee уже настроены внутри
