@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 OUTPUT_DIR = Path(__file__).parent
+REG_PROCEDURE = "00"
 REG_LOCAL = "01"
 REG_GLOBAL = "11"
 
@@ -50,6 +51,21 @@ def direct_address(reg_num, offset=0, reg_class=REG_GLOBAL):
 def direct_source(reg_num, offset, size_bits, reg_class=REG_GLOBAL):
     return (
         direct_address(reg_num, offset, reg_class)
+        + variable_size(size_bits)
+    )
+
+
+def indirect_address(reg_num, offset=0, reg_class=REG_GLOBAL):
+    return (
+        "01"
+        + register_selector(reg_num, reg_class)
+        + variable_size(offset)
+    )
+
+
+def indirect_source(reg_num, offset, size_bits, reg_class=REG_GLOBAL):
+    return (
+        indirect_address(reg_num, offset, reg_class)
         + variable_size(size_bits)
     )
 
@@ -291,6 +307,61 @@ def generate_copy_value_0101():
     write_case("copy_value_0101", program, network)
 
 
+def generate_indirect_addressing_01():
+    source_reference = direct_address(20, 0)
+    destination_reference = direct_address(22, 13)
+    first_value = int("1011010010110", 2)
+    second_value = int("1100101101001", 2)
+    program = (
+        resize(20, 13)
+        + resize(21, len(source_reference))
+        + resize(22, 26)
+        + resize(23, len(destination_reference))
+        + copy(immediate(first_value), direct_address(20, 0))
+        + copy(
+            immediate(int(source_reference, 2)),
+            direct_address(21, 0),
+        )
+        + copy(
+            indirect_source(21, 0, 13),
+            direct_address(22, 0),
+        )
+        + copy(
+            immediate(int(destination_reference, 2)),
+            direct_address(23, 0),
+        )
+        + copy(immediate(second_value), indirect_address(23, 0))
+        + "1011"
+    )
+    network = build_network({"0101": 0x05, "1011": 0x0B, "1100": 0x0C})
+    write_case("indirect_addressing_01", program, network)
+
+
+def generate_procedure_register_class_00():
+    value_bits = "1011010010110"
+    value_offset = 0
+    for _ in range(8):
+        prefix = (
+            resize(20, len(value_bits))
+            + copy(
+                direct_source(
+                    31, value_offset, len(value_bits), REG_PROCEDURE
+                ),
+                direct_address(20, 0),
+            )
+            + "1011"
+        )
+        new_value_offset = len(prefix)
+        if new_value_offset == value_offset:
+            break
+        value_offset = new_value_offset
+    else:
+        raise RuntimeError("procedure-register offset did not converge")
+
+    network = build_network({"0101": 0x05, "1011": 0x0B, "1100": 0x0C})
+    write_case("procedure_register_class_00", prefix + value_bits, network)
+
+
 def generate_accumulated_prefixes_compute_0000_0001():
     inner = (
         read_prefix(1)
@@ -405,6 +476,8 @@ def main():
     generate_jump_to_position_1010()
     generate_return_result_1001()
     generate_copy_value_0101()
+    generate_indirect_addressing_01()
+    generate_procedure_register_class_00()
     generate_accumulated_prefixes_compute_0000_0001()
     generate_write_prefix_0001()
     generate_conditional_prefix_0010()

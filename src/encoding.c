@@ -56,6 +56,7 @@ Address read_address(BitCursor *cursor) {
             addr.imm = bc_read_bits(cursor, (int)addr.imm_size);
             break;
 
+        case ADDR_INDIRECT:
         case ADDR_DIRECT: {
             RegisterSelector selector = read_register_selector(cursor);
             addr.reg_class = selector.reg_class;
@@ -63,11 +64,6 @@ Address read_address(BitCursor *cursor) {
             addr.offset    = read_variable_size(cursor);
             break;
         }
-
-        case ADDR_INDIRECT:
-            // Пока не реализовано
-            fprintf(stderr, "FATAL: indirect addressing not implemented\n");
-            exit(1);
 
         case ADDR_FOREIGN:
             // Пока не реализовано

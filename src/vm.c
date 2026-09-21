@@ -191,7 +191,8 @@ static ArAction exec_conditional_prefix(CommandContext *context) {
     Address condition = read_address(&context->operands);
     command_context_commit_operands(context);
     context->vm->prefix_condition = read_value_sized(
-        context->vm, condition, 1, context->operands.pos) != 0;
+        context->vm, context->read_ar, condition, 1,
+        context->operands.pos) != 0;
     context->vm->has_prefix_condition = 1;
     return AR_NOP;
 }
@@ -205,8 +206,10 @@ static ArAction exec_compute(CommandContext *context) {
     Address dst = read_address(&context->operands);
     command_context_commit_operands(context);
 
-    uint64_t v1 = read_range(context->vm, src1, context->operands.pos);
-    uint64_t v2 = read_range(context->vm, src2, context->operands.pos);
+    uint64_t v1 = read_range(context->vm, context->read_ar, src1,
+                             context->operands.pos);
+    uint64_t v2 = read_range(context->vm, context->read_ar, src2,
+                             context->operands.pos);
     uint64_t result = 0;
     switch (opcode) {
         case 0: result = v1 + v2; break;
@@ -217,7 +220,8 @@ static ArAction exec_compute(CommandContext *context) {
 
     uint64_t rsize = src1.size_bits > src2.size_bits
                    ? src1.size_bits : src2.size_bits;
-    write_range(context->vm, dst, result, rsize, context->operands.pos);
+    write_range(context->vm, context->write_ar, dst, result, rsize,
+                context->operands.pos);
 
     printf("[COMPUTE] op=%llu -> reg%d[%llu] = %llu (size=%llu)\n",
            (unsigned long long)opcode, dst.reg_num,
@@ -232,7 +236,8 @@ static ArAction exec_copy(CommandContext *context) {
     Address dst = read_address(&context->operands);
     command_context_commit_operands(context);
 
-    copy_range(context->vm, src, dst, context->operands.pos);
+    copy_range(context->vm, context->read_ar, src, context->write_ar, dst,
+               context->operands.pos);
     printf("[COPY] %llu bits\n", (unsigned long long)src.size_bits);
     return AR_NOP;
 }
@@ -262,7 +267,7 @@ static ArAction exec_call_new_proc(CommandContext *context) {
 static ArAction exec_call_new_rs(CommandContext *context) {
     ActivationRecord *caller = context->write_ar;
     Address src = read_address(&context->operands);
-    uint64_t entry = read_by_address(context->vm, src,
+    uint64_t entry = read_by_address(context->vm, context->read_ar, src,
                                      context->operands.pos);
     command_context_commit_operands(context);
     caller->rs_ptr = context->node.next0;
@@ -310,7 +315,8 @@ static ArAction exec_return_result(CommandContext *context) {
     ActivationRecord *ar = context->write_ar;
     Range src = read_source(&context->operands);
     command_context_commit_operands(context);
-    uint64_t val = read_range(context->vm, src, context->operands.pos);
+    uint64_t val = read_range(context->vm, context->read_ar, src,
+                              context->operands.pos);
     printf("[RETURN RESULT] val=%llu\n", (unsigned long long)val);
 
     if (ar->prev) {
@@ -329,7 +335,8 @@ static ArAction exec_jump(CommandContext *context) {
     Range position_source = read_source(&context->operands);
     command_context_commit_operands(context);
 
-    uint64_t new_position = read_range(context->vm, position_source,
+    uint64_t new_position = read_range(context->vm, context->read_ar,
+                                       position_source,
                                        context->operands.pos);
     size_t new_position_bits = (size_t)new_position;
     if ((uint64_t)new_position_bits != new_position) {
@@ -377,7 +384,8 @@ static ArAction exec_resize(CommandContext *context) {
         exit(1);
     }
 
-    uint64_t new_size = read_range(context->vm, size_source,
+    uint64_t new_size = read_range(context->vm, context->read_ar,
+                                   size_source,
                                    context->operands.pos);
     size_t new_size_bits = (size_t)new_size;
     if ((uint64_t)new_size_bits != new_size) {
@@ -420,7 +428,7 @@ static ArAction exec_get_size(CommandContext *context) {
         exit(1);
     }
 
-    write_by_address(context->vm, destination, size_bits,
+    write_by_address(context->vm, context->write_ar, destination, size_bits,
                      context->operands.pos);
     printf("[GET SIZE] reg%u -> %llu bits\n",
            source.reg_num, (unsigned long long)size_bits);

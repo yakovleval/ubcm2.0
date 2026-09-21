@@ -27,9 +27,21 @@ static size_t checked_size(uint64_t value, const char *what,
     return result;
 }
 
-static Register *resolve_register(VM *vm, uint8_t reg_class,
-                                  uint8_t reg_num, size_t stream_pos) {
+static Register *resolve_register(VM *vm, ActivationRecord *context_ar,
+                                  uint8_t reg_class, uint8_t reg_num,
+                                  size_t stream_pos) {
     switch (reg_class) {
+        case REG_PROCEDURE: {
+            Register *reg = vm_get_register(vm, context_ar->proc_reg);
+            if (!reg) {
+                fprintf(stderr,
+                        "FATAL: procedure register %d not found at pos=%zu\n",
+                        context_ar->proc_reg, stream_pos);
+                exit(1);
+            }
+            return reg;
+        }
+
         case REG_GLOBAL: {
             Register *reg = vm_get_register(vm, reg_num);
             if (!reg) {
@@ -41,7 +53,6 @@ static Register *resolve_register(VM *vm, uint8_t reg_class,
             return reg;
         }
 
-        case REG_PROCEDURE:
         case REG_LOCAL:
         case REG_SUPERLOCAL:
             fprintf(stderr,
@@ -57,7 +68,8 @@ static Register *resolve_register(VM *vm, uint8_t reg_class,
     }
 }
 
-static ResolvedRange resolve_address(VM *vm, Address address,
+static ResolvedRange resolve_address(VM *vm, ActivationRecord *context_ar,
+                                     Address address,
                                      uint64_t size_bits, int writable,
                                      size_t stream_pos) {
     ResolvedRange resolved = {0};
@@ -82,7 +94,8 @@ static ResolvedRange resolve_address(VM *vm, Address address,
             return resolved;
 
         case ADDR_DIRECT: {
-            Register *reg = resolve_register(vm, address.reg_class,
+            Register *reg = resolve_register(vm, context_ar,
+                                             address.reg_class,
                                              address.reg_num, stream_pos);
             resolved.kind = RESOLVED_VECTOR;
             resolved.vector = reg->bits;
@@ -99,11 +112,32 @@ static ResolvedRange resolve_address(VM *vm, Address address,
             return resolved;
         }
 
-        case ADDR_INDIRECT:
-            fprintf(stderr,
-                    "FATAL: indirect addressing not implemented at pos=%zu\n",
-                    stream_pos);
-            exit(1);
+        case ADDR_INDIRECT: {
+            Register *pointer_register = resolve_register(
+                vm, context_ar, address.reg_class, address.reg_num,
+                stream_pos);
+            size_t pointer_offset = checked_size(
+                address.offset, "indirect address offset", stream_pos);
+            if (pointer_offset >= pointer_register->bits->size_bits) {
+                fprintf(stderr,
+                        "FATAL: indirect address out of bounds at pos=%zu\n",
+                        stream_pos);
+                exit(1);
+            }
+
+            BitCursor cursor = bc_create(pointer_register->bits,
+                                         pointer_offset);
+            Address target = read_address(&cursor);
+            if (target.mode != ADDR_DIRECT) {
+                fprintf(stderr,
+                        "FATAL: indirect address must point to a direct "
+                        "reference at pos=%zu\n",
+                        stream_pos);
+                exit(1);
+            }
+            return resolve_address(vm, context_ar, target, size_bits,
+                                   writable, stream_pos);
+        }
 
         case ADDR_FOREIGN:
             fprintf(stderr,
@@ -119,9 +153,10 @@ static ResolvedRange resolve_address(VM *vm, Address address,
     }
 }
 
-uint64_t read_range(VM *vm, Range range, size_t stream_pos) {
-    ResolvedRange resolved = resolve_address(vm, range.addr, range.size_bits,
-                                             0, stream_pos);
+uint64_t read_range(VM *vm, ActivationRecord *context_ar, Range range,
+                    size_t stream_pos) {
+    ResolvedRange resolved = resolve_address(vm, context_ar, range.addr,
+                                             range.size_bits, 0, stream_pos);
     if (resolved.size_bits > 64) {
         fprintf(stderr, "FATAL: read size exceeds 64 bits at pos=%zu\n",
                 stream_pos);
@@ -134,10 +169,11 @@ uint64_t read_range(VM *vm, Range range, size_t stream_pos) {
     return bc_read_bits(&cursor, (int)resolved.size_bits);
 }
 
-void write_range(VM *vm, Address destination, uint64_t value,
+void write_range(VM *vm, ActivationRecord *context_ar, Address destination,
+                 uint64_t value,
                  uint64_t size_bits, size_t stream_pos) {
-    ResolvedRange resolved = resolve_address(vm, destination, size_bits, 1,
-                                             stream_pos);
+    ResolvedRange resolved = resolve_address(vm, context_ar, destination,
+                                             size_bits, 1, stream_pos);
     if (resolved.size_bits > 64) {
         fprintf(stderr, "FATAL: write size exceeds 64 bits at pos=%zu\n",
                 stream_pos);
@@ -157,12 +193,13 @@ static void copy_cursors(BitCursor *source, BitCursor *destination,
     }
 }
 
-void copy_range(VM *vm, Range source, Address destination,
+void copy_range(VM *vm, ActivationRecord *read_ar, Range source,
+                ActivationRecord *write_ar, Address destination,
                 size_t stream_pos) {
     ResolvedRange resolved_source = resolve_address(
-        vm, source.addr, source.size_bits, 0, stream_pos);
+        vm, read_ar, source.addr, source.size_bits, 0, stream_pos);
     ResolvedRange resolved_destination = resolve_address(
-        vm, destination, source.size_bits, 1, stream_pos);
+        vm, write_ar, destination, source.size_bits, 1, stream_pos);
     BitVector *temporary = bv_create(resolved_source.size_bits);
     BitCursor temporary_writer = bc_create(temporary, 0);
 
@@ -184,22 +221,26 @@ void copy_range(VM *vm, Range source, Address destination,
     bv_free(temporary);
 }
 
-uint64_t read_value_sized(VM *vm, Address address, uint64_t size_bits,
+uint64_t read_value_sized(VM *vm, ActivationRecord *context_ar,
+                          Address address, uint64_t size_bits,
                           size_t stream_pos) {
     Range range = {.addr = address, .size_bits = size_bits};
-    return read_range(vm, range, stream_pos);
+    return read_range(vm, context_ar, range, stream_pos);
 }
 
-void write_value_sized(VM *vm, Address address, uint64_t value,
+void write_value_sized(VM *vm, ActivationRecord *context_ar,
+                       Address address, uint64_t value,
                        uint64_t size_bits, size_t stream_pos) {
-    write_range(vm, address, value, size_bits, stream_pos);
+    write_range(vm, context_ar, address, value, size_bits, stream_pos);
 }
 
-uint64_t read_by_address(VM *vm, Address address, size_t stream_pos) {
-    return read_value_sized(vm, address, 64, stream_pos);
+uint64_t read_by_address(VM *vm, ActivationRecord *context_ar,
+                         Address address, size_t stream_pos) {
+    return read_value_sized(vm, context_ar, address, 64, stream_pos);
 }
 
-void write_by_address(VM *vm, Address address, uint64_t value,
+void write_by_address(VM *vm, ActivationRecord *context_ar,
+                      Address address, uint64_t value,
                       size_t stream_pos) {
-    write_value_sized(vm, address, value, 64, stream_pos);
+    write_value_sized(vm, context_ar, address, value, 64, stream_pos);
 }

@@ -107,6 +107,26 @@ int main(int argc, char **argv) {
         if (result_count != 0)
             fail(case_name, "COPY unexpectedly returned a CALL result");
         check_copy(vm, case_name);
+    } else if (strcmp(case_name, "indirect_addressing_01") == 0) {
+        if (result_count != 0)
+            fail(case_name, "indirect COPY unexpectedly returned a result");
+        Register *reg22 = vm_get_register(vm, 22);
+        if (!reg22 || reg22->bits->size_bits != 26)
+            fail(case_name, "indirect COPY destination is missing");
+        BitCursor cursor = bc_create(reg22->bits, 0);
+        if (bc_read_bits(&cursor, 13) != UINT64_C(0x1696))
+            fail(case_name, "indirect source returned unexpected bits");
+        if (bc_read_bits(&cursor, 13) != UINT64_C(0x1969))
+            fail(case_name, "indirect destination contains unexpected bits");
+    } else if (strcmp(case_name, "procedure_register_class_00") == 0) {
+        if (result_count != 0)
+            fail(case_name, "procedure-register COPY returned a result");
+        Register *reg20 = vm_get_register(vm, 20);
+        if (!reg20 || reg20->bits->size_bits != 13)
+            fail(case_name, "procedure-register destination is missing");
+        BitCursor cursor = bc_create(reg20->bits, 0);
+        if (bc_read_bits(&cursor, 13) != UINT64_C(0x1696))
+            fail(case_name, "procedure-register source returned wrong bits");
     } else if (strcmp(case_name,
                       "accumulated_prefixes_compute_0000_0001") == 0) {
         if (result_count != 0)
