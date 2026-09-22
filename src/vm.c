@@ -1,46 +1,11 @@
 #include "vm.h"
-#include "addressing.h"
+#include "registers.h"
 #include "encoding.h"
+#include "references.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 VM *vm_create(void) { return calloc(1, sizeof(VM)); }
-
-void vm_free_register_slot(Register **slot) {
-    if (*slot) {
-        bv_free((*slot)->bits);
-        free(*slot);
-        *slot = NULL;
-    }
-}
-
-void vm_resize_register_slot(Register **slot, size_t size_bits) {
-    if (size_bits == 0) {
-        vm_free_register_slot(slot);
-        return;
-    }
-    if (!*slot) {
-        *slot = malloc(sizeof(Register));
-        (*slot)->bits = bv_create(size_bits);
-        return;
-    }
-
-    BitVector *old_bits = (*slot)->bits;
-    BitVector *new_bits = bv_create(size_bits);
-    size_t preserved_bits = old_bits->size_bits < size_bits
-                          ? old_bits->size_bits : size_bits;
-    size_t full_bytes = preserved_bits / 8;
-    size_t remaining_bits = preserved_bits % 8;
-    if (full_bytes > 0)
-        memcpy(new_bits->data, old_bits->data, full_bytes);
-    if (remaining_bits > 0) {
-        uint8_t mask = (uint8_t)(0xFFu << (8 - remaining_bits));
-        new_bits->data[full_bytes] = old_bits->data[full_bytes] & mask;
-    }
-    (*slot)->bits = new_bits;
-    bv_free(old_bits);
-}
 
 static void activation_record_free(ActivationRecord *ar) {
     for (int i = 0; i < MAX_REGISTERS; i++)
@@ -67,41 +32,6 @@ void vm_free(VM *vm) {
         free(storage);
     }
     free(vm);
-}
-
-void vm_create_register(VM *vm, int num, size_t size_bits) {
-    if (num < 0 || num >= MAX_REGISTERS) {
-        fprintf(stderr, "FATAL: invalid register number %d\n", num);
-        exit(1);
-    }
-    if (vm->registers[num]) {
-        bv_free(vm->registers[num]->bits);
-        free(vm->registers[num]);
-    }
-    Register *reg = malloc(sizeof(Register));
-    reg->bits = bv_create(size_bits);
-    vm->registers[num] = reg;
-}
-
-void vm_delete_register(VM *vm, int num) {
-    if (num < 0 || num >= MAX_REGISTERS) {
-        fprintf(stderr, "FATAL: invalid register number %d\n", num);
-        exit(1);
-    }
-    vm_free_register_slot(&vm->registers[num]);
-}
-
-void vm_resize_register(VM *vm, int num, size_t size_bits) {
-    if (num < 0 || num >= MAX_REGISTERS) {
-        fprintf(stderr, "FATAL: invalid register number %d\n", num);
-        exit(1);
-    }
-    vm_resize_register_slot(&vm->registers[num], size_bits);
-}
-
-Register *vm_get_register(VM *vm, int num) {
-    if (num < 0 || num >= MAX_REGISTERS) return NULL;
-    return vm->registers[num];
 }
 
 ResolvingNetworkNode vm_read_resolving_network_node(
@@ -148,20 +78,6 @@ void vm_load_rs(VM *vm, int reg_num, const char *filename) {
     load_file_into_register(vm, reg_num, filename);
 }
 
-void vm_set_uint64(VM *vm, int reg_num, uint64_t value) {
-    Register *reg = vm_get_register(vm, reg_num);
-    if (!reg) { vm_create_register(vm, reg_num, 64); reg = vm_get_register(vm, reg_num); }
-    BitCursor cursor = bc_create(reg->bits, 0);
-    bc_write_bits(&cursor, value, 64);
-}
-
-uint64_t vm_get_uint64(VM *vm, int reg_num) {
-    Register *reg = vm_get_register(vm, reg_num);
-    if (!reg) return 0;
-    BitCursor cursor = bc_create(reg->bits, 0);
-    return bc_read_bits(&cursor, 64);
-}
-
 static CommandContext command_context_create(VM *vm,
                                              ActivationRecord *execution_ar,
                                              ActivationRecord *read_ar,
@@ -185,9 +101,9 @@ static void command_context_commit_operands(CommandContext *context) {
     context->execution_ar->proc_pos = context->operands.pos;
 }
 
-static RegisterResolutionContext command_register_context(
+static RegisterContext command_register_context(
     CommandContext *context, ActivationRecord *ar) {
-    RegisterResolutionContext register_context = {
+    RegisterContext register_context = {
         .ar = ar,
         .superlocal_owner = context->node_entry,
         .superlocal_resolver = {
@@ -250,9 +166,9 @@ static ArAction exec_compute(CommandContext *context) {
     Address dst = read_address(&context->operands);
     command_context_commit_operands(context);
 
-    RegisterResolutionContext read_context = command_register_context(
+    RegisterContext read_context = command_register_context(
         context, context->read_ar);
-    RegisterResolutionContext write_context = command_register_context(
+    RegisterContext write_context = command_register_context(
         context, context->write_ar);
     uint64_t v1 = read_range(context->vm, read_context, src1,
                              context->operands.pos);
