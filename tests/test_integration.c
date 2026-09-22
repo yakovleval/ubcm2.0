@@ -137,6 +137,22 @@ int main(int argc, char **argv) {
         BitCursor cursor = bc_create(reg20->bits, 0);
         if (bc_read_bits(&cursor, 3) != 7)
             fail(case_name, "prefixed COMPUTE returned an unexpected value");
+    } else if (strcmp(case_name, "superlocal_registers") == 0) {
+        if (result_count != 0)
+            fail(case_name, "superlocal commands returned a result");
+        Register *reg20 = vm_get_register(vm, 20);
+        if (!reg20 || reg20->bits->size_bits != 64)
+            fail(case_name, "superlocal result register is missing");
+        BitCursor cursor = bc_create(reg20->bits, 0);
+        if (bc_read_bits(&cursor, 64) != 0)
+            fail(case_name, "different nodes shared superlocal storage");
+        size_t storage_count = 0;
+        for (SuperlocalStorage *storage = vm->superlocal_storages;
+             storage; storage = storage->next)
+            storage_count++;
+        if (storage_count != 2)
+            fail(case_name,
+                 "superlocal storages are not owned by nodes");
     } else if (strcmp(case_name, "write_activation_record_0001") == 0) {
         if (result_count != 0)
             fail(case_name, "write prefix unexpectedly returned a result");

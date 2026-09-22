@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #define MAX_REGISTERS 256
+#define DEFAULT_LOCAL_RESOLVER_NODE 128
 
 typedef struct {
     BitVector *bits;
@@ -21,16 +22,24 @@ typedef struct ActivationRecord {
     uint64_t result_value;
     int has_result;
     int proc_reg;              // регистр с процедурой
-    int rs_reg;                // регистр с РС
-    uint64_t rs_ptr;           // текущий узел в РС
+    ResolvingNetworkEntry current_node;
+    ResolvingNetworkEntry local_resolver;
+    Register *local_registers[MAX_REGISTERS];
     uint64_t proc_pos;         // позиция в процедуре (в битах)
     int shares_rs;    // 0110: делим rs_ptr с caller
     int shares_proc;  // 0111: делим proc_pos с caller
     struct ActivationRecord *prev;
 } ActivationRecord;
 
+typedef struct SuperlocalStorage {
+    ResolvingNetworkEntry owner_node;
+    Register *registers[MAX_REGISTERS];
+    struct SuperlocalStorage *next;
+} SuperlocalStorage;
+
 typedef struct {
     Register *registers[MAX_REGISTERS];
+    SuperlocalStorage *superlocal_storages;
     ActivationRecord *current_ar;
     ActivationRecord *prefix_read_ar;
     ActivationRecord *prefix_write_ar;
@@ -47,6 +56,7 @@ typedef struct {
     ActivationRecord *read_ar;
     ActivationRecord *write_ar;
     ResolvingNetworkNode node;
+    ResolvingNetworkEntry node_entry;
     BitCursor operands;
 } CommandContext;
 
@@ -56,7 +66,11 @@ void vm_free(VM *vm);
 void vm_create_register(VM *vm, int num, size_t size_bits);
 void vm_delete_register(VM *vm, int num);
 void vm_resize_register(VM *vm, int num, size_t size_bits);
+void vm_resize_register_slot(Register **slot, size_t size_bits);
+void vm_free_register_slot(Register **slot);
 Register *vm_get_register(VM *vm, int num);
+ResolvingNetworkNode vm_read_resolving_network_node(
+    VM *vm, ResolvingNetworkEntry entry, size_t stream_pos);
 
 void vm_load_procedure(VM *vm, int reg_num, const char *filename);
 void vm_load_rs(VM *vm, int reg_num, const char *filename);

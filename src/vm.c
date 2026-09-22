@@ -7,17 +7,64 @@
 
 VM *vm_create(void) { return calloc(1, sizeof(VM)); }
 
+void vm_free_register_slot(Register **slot) {
+    if (*slot) {
+        bv_free((*slot)->bits);
+        free(*slot);
+        *slot = NULL;
+    }
+}
+
+void vm_resize_register_slot(Register **slot, size_t size_bits) {
+    if (size_bits == 0) {
+        vm_free_register_slot(slot);
+        return;
+    }
+    if (!*slot) {
+        *slot = malloc(sizeof(Register));
+        (*slot)->bits = bv_create(size_bits);
+        return;
+    }
+
+    BitVector *old_bits = (*slot)->bits;
+    BitVector *new_bits = bv_create(size_bits);
+    size_t preserved_bits = old_bits->size_bits < size_bits
+                          ? old_bits->size_bits : size_bits;
+    size_t full_bytes = preserved_bits / 8;
+    size_t remaining_bits = preserved_bits % 8;
+    if (full_bytes > 0)
+        memcpy(new_bits->data, old_bits->data, full_bytes);
+    if (remaining_bits > 0) {
+        uint8_t mask = (uint8_t)(0xFFu << (8 - remaining_bits));
+        new_bits->data[full_bytes] = old_bits->data[full_bytes] & mask;
+    }
+    (*slot)->bits = new_bits;
+    bv_free(old_bits);
+}
+
+static void activation_record_free(ActivationRecord *ar) {
+    for (int i = 0; i < MAX_REGISTERS; i++)
+        vm_free_register_slot(&ar->local_registers[i]);
+    free(ar);
+}
+
 void vm_free(VM *vm) {
     for (int i = 0; i < MAX_REGISTERS; i++) {
         if (vm->registers[i]) {
-            bv_free(vm->registers[i]->bits);
-            free(vm->registers[i]);
+            vm_free_register_slot(&vm->registers[i]);
         }
     }
     while (vm->current_ar) {
         ActivationRecord *p = vm->current_ar->prev;
-        free(vm->current_ar);
+        activation_record_free(vm->current_ar);
         vm->current_ar = p;
+    }
+    while (vm->superlocal_storages) {
+        SuperlocalStorage *storage = vm->superlocal_storages;
+        vm->superlocal_storages = storage->next;
+        for (int i = 0; i < MAX_REGISTERS; i++)
+            vm_free_register_slot(&storage->registers[i]);
+        free(storage);
     }
     free(vm);
 }
@@ -41,11 +88,7 @@ void vm_delete_register(VM *vm, int num) {
         fprintf(stderr, "FATAL: invalid register number %d\n", num);
         exit(1);
     }
-    if (vm->registers[num]) {
-        bv_free(vm->registers[num]->bits);
-        free(vm->registers[num]);
-        vm->registers[num] = NULL;
-    }
+    vm_free_register_slot(&vm->registers[num]);
 }
 
 void vm_resize_register(VM *vm, int num, size_t size_bits) {
@@ -53,39 +96,24 @@ void vm_resize_register(VM *vm, int num, size_t size_bits) {
         fprintf(stderr, "FATAL: invalid register number %d\n", num);
         exit(1);
     }
-    if (size_bits == 0) {
-        vm_delete_register(vm, num);
-        return;
-    }
-
-    Register *reg = vm->registers[num];
-    if (!reg) {
-        vm_create_register(vm, num, size_bits);
-        return;
-    }
-
-    BitVector *old_bits = reg->bits;
-    BitVector *new_bits = bv_create(size_bits);
-    size_t preserved_bits = old_bits->size_bits < size_bits
-                          ? old_bits->size_bits : size_bits;
-    size_t full_bytes = preserved_bits / 8;
-    size_t remaining_bits = preserved_bits % 8;
-
-    if (full_bytes > 0)
-        memcpy(new_bits->data, old_bits->data, full_bytes);
-
-    if (remaining_bits > 0) {
-        uint8_t mask = (uint8_t)(0xFFu << (8 - remaining_bits));
-        new_bits->data[full_bytes] = old_bits->data[full_bytes] & mask;
-    }
-
-    reg->bits = new_bits;
-    bv_free(old_bits);
+    vm_resize_register_slot(&vm->registers[num], size_bits);
 }
 
 Register *vm_get_register(VM *vm, int num) {
     if (num < 0 || num >= MAX_REGISTERS) return NULL;
     return vm->registers[num];
+}
+
+ResolvingNetworkNode vm_read_resolving_network_node(
+    VM *vm, ResolvingNetworkEntry entry, size_t stream_pos) {
+    Register *network = vm_get_register(vm, entry.reg_num);
+    if (!network) {
+        fprintf(stderr,
+                "FATAL: resolving network register %d not found at pos=%zu\n",
+                entry.reg_num, stream_pos);
+        exit(1);
+    }
+    return resolving_network_decode_node(network->bits, entry.node_index);
 }
 
 static void load_file_into_register(VM *vm, int reg_num, const char *filename) {
@@ -138,6 +166,7 @@ static CommandContext command_context_create(VM *vm,
                                              ActivationRecord *execution_ar,
                                              ActivationRecord *read_ar,
                                              ActivationRecord *write_ar,
+                                             ResolvingNetworkEntry node_entry,
                                              ResolvingNetworkNode node) {
     Register *proc = vm_get_register(vm, execution_ar->proc_reg);
     CommandContext context = {
@@ -146,6 +175,7 @@ static CommandContext command_context_create(VM *vm,
         .read_ar = read_ar,
         .write_ar = write_ar,
         .node = node,
+        .node_entry = node_entry,
         .operands = bc_create(proc->bits, execution_ar->proc_pos),
     };
     return context;
@@ -153,6 +183,19 @@ static CommandContext command_context_create(VM *vm,
 
 static void command_context_commit_operands(CommandContext *context) {
     context->execution_ar->proc_pos = context->operands.pos;
+}
+
+static RegisterResolutionContext command_register_context(
+    CommandContext *context, ActivationRecord *ar) {
+    RegisterResolutionContext register_context = {
+        .ar = ar,
+        .superlocal_owner = context->node_entry,
+        .superlocal_resolver = {
+            .reg_num = context->node_entry.reg_num,
+            .node_index = context->node.resolver,
+        },
+    };
+    return register_context;
 }
 
 static ActivationRecord *activation_record_at_depth(VM *vm, uint64_t depth,
@@ -191,7 +234,8 @@ static ArAction exec_conditional_prefix(CommandContext *context) {
     Address condition = read_address(&context->operands);
     command_context_commit_operands(context);
     context->vm->prefix_condition = read_value_sized(
-        context->vm, context->read_ar, condition, 1,
+        context->vm,
+        command_register_context(context, context->read_ar), condition, 1,
         context->operands.pos) != 0;
     context->vm->has_prefix_condition = 1;
     return AR_NOP;
@@ -206,9 +250,13 @@ static ArAction exec_compute(CommandContext *context) {
     Address dst = read_address(&context->operands);
     command_context_commit_operands(context);
 
-    uint64_t v1 = read_range(context->vm, context->read_ar, src1,
+    RegisterResolutionContext read_context = command_register_context(
+        context, context->read_ar);
+    RegisterResolutionContext write_context = command_register_context(
+        context, context->write_ar);
+    uint64_t v1 = read_range(context->vm, read_context, src1,
                              context->operands.pos);
-    uint64_t v2 = read_range(context->vm, context->read_ar, src2,
+    uint64_t v2 = read_range(context->vm, read_context, src2,
                              context->operands.pos);
     uint64_t result = 0;
     switch (opcode) {
@@ -220,7 +268,7 @@ static ArAction exec_compute(CommandContext *context) {
 
     uint64_t rsize = src1.size_bits > src2.size_bits
                    ? src1.size_bits : src2.size_bits;
-    write_range(context->vm, context->write_ar, dst, result, rsize,
+    write_range(context->vm, write_context, dst, result, rsize,
                 context->operands.pos);
 
     printf("[COMPUTE] op=%llu -> reg%d[%llu] = %llu (size=%llu)\n",
@@ -236,7 +284,9 @@ static ArAction exec_copy(CommandContext *context) {
     Address dst = read_address(&context->operands);
     command_context_commit_operands(context);
 
-    copy_range(context->vm, context->read_ar, src, context->write_ar, dst,
+    copy_range(context->vm,
+               command_register_context(context, context->read_ar), src,
+               command_register_context(context, context->write_ar), dst,
                context->operands.pos);
     printf("[COPY] %llu bits\n", (unsigned long long)src.size_bits);
     return AR_NOP;
@@ -247,12 +297,12 @@ static ArAction exec_call_new_proc(CommandContext *context) {
     ActivationRecord *caller = context->write_ar;
     Address src = read_address(&context->operands);
     command_context_commit_operands(context);
-    caller->rs_ptr = context->node.next0;
+    caller->current_node.node_index = context->node.next0;
 
     ActivationRecord *n = calloc(1, sizeof(ActivationRecord));
     n->proc_reg    = src.reg_num;
-    n->rs_reg      = caller->rs_reg;
-    n->rs_ptr      = context->node.next0;
+    n->current_node = caller->current_node;
+    n->local_resolver = caller->local_resolver;
     n->proc_pos    = src.offset;
     n->shares_rs   = 1;
     n->shares_proc = 0;
@@ -267,15 +317,17 @@ static ArAction exec_call_new_proc(CommandContext *context) {
 static ArAction exec_call_new_rs(CommandContext *context) {
     ActivationRecord *caller = context->write_ar;
     Address src = read_address(&context->operands);
-    uint64_t entry = read_by_address(context->vm, context->read_ar, src,
+    uint64_t entry = read_by_address(
+        context->vm, command_register_context(context, context->read_ar), src,
                                      context->operands.pos);
     command_context_commit_operands(context);
-    caller->rs_ptr = context->node.next0;
+    caller->current_node.node_index = context->node.next0;
 
     ActivationRecord *n = calloc(1, sizeof(ActivationRecord));
     n->proc_reg    = context->read_ar->proc_reg;
-    n->rs_reg      = caller->rs_reg;
-    n->rs_ptr      = entry;
+    n->current_node.reg_num = caller->current_node.reg_num;
+    n->current_node.node_index = entry;
+    n->local_resolver = caller->local_resolver;
     n->proc_pos    = context->read_ar->proc_pos;
     n->shares_rs   = 0;
     n->shares_proc = 1;
@@ -292,12 +344,13 @@ static ArAction exec_call_new_both(CommandContext *context) {
     Address src_proc = read_address(&context->operands);
     Address src_rs = read_address(&context->operands);
     command_context_commit_operands(context);
-    caller->rs_ptr = context->node.next0;
+    caller->current_node.node_index = context->node.next0;
 
     ActivationRecord *n = calloc(1, sizeof(ActivationRecord));
     n->proc_reg    = src_proc.reg_num;
-    n->rs_reg      = src_rs.reg_num;
-    n->rs_ptr      = src_rs.offset;
+    n->current_node.reg_num = src_rs.reg_num;
+    n->current_node.node_index = src_rs.offset;
+    n->local_resolver = caller->local_resolver;
     n->proc_pos    = src_proc.offset;
     n->shares_rs   = 0;
     n->shares_proc = 0;
@@ -315,7 +368,8 @@ static ArAction exec_return_result(CommandContext *context) {
     ActivationRecord *ar = context->write_ar;
     Range src = read_source(&context->operands);
     command_context_commit_operands(context);
-    uint64_t val = read_range(context->vm, context->read_ar, src,
+    uint64_t val = read_range(
+        context->vm, command_register_context(context, context->read_ar), src,
                               context->operands.pos);
     printf("[RETURN RESULT] val=%llu\n", (unsigned long long)val);
 
@@ -335,7 +389,10 @@ static ArAction exec_jump(CommandContext *context) {
     Range position_source = read_source(&context->operands);
     command_context_commit_operands(context);
 
-    uint64_t new_position = read_range(context->vm, context->read_ar,
+    uint64_t new_position = read_range(
+                                       context->vm,
+                                       command_register_context(
+                                           context, context->read_ar),
                                        position_source,
                                        context->operands.pos);
     size_t new_position_bits = (size_t)new_position;
@@ -376,15 +433,10 @@ static ArAction exec_resize(CommandContext *context) {
     Range size_source = read_source(&context->operands);
     command_context_commit_operands(context);
 
-    if (target.reg_class != REG_GLOBAL) {
-        fprintf(stderr,
-                "FATAL: RESIZE supports only global registers "
-                "(class=%u, pos=%zu)\n",
-                target.reg_class, context->operands.pos);
-        exit(1);
-    }
-
-    uint64_t new_size = read_range(context->vm, context->read_ar,
+    uint64_t new_size = read_range(
+                                   context->vm,
+                                   command_register_context(
+                                       context, context->read_ar),
                                    size_source,
                                    context->operands.pos);
     size_t new_size_bits = (size_t)new_size;
@@ -397,7 +449,11 @@ static ArAction exec_resize(CommandContext *context) {
         exit(1);
     }
 
-    vm_resize_register(context->vm, target.reg_num, new_size_bits);
+    Register **target_slot = resolve_register_slot(
+        context->vm,
+        command_register_context(context, context->write_ar), target,
+        context->operands.pos);
+    vm_resize_register_slot(target_slot, new_size_bits);
     printf("[RESIZE] reg%u -> %llu bits\n",
            target.reg_num, (unsigned long long)new_size);
     return AR_NOP;
@@ -409,15 +465,11 @@ static ArAction exec_get_size(CommandContext *context) {
     Address destination = read_address(&context->operands);
     command_context_commit_operands(context);
 
-    if (source.reg_class != REG_GLOBAL) {
-        fprintf(stderr,
-                "FATAL: GET SIZE supports only global registers "
-                "(class=%u, pos=%zu)\n",
-                source.reg_class, context->operands.pos);
-        exit(1);
-    }
-
-    Register *reg = vm_get_register(context->vm, source.reg_num);
+    Register **source_slot = resolve_register_slot(
+        context->vm,
+        command_register_context(context, context->read_ar), source,
+        context->operands.pos);
+    Register *reg = *source_slot;
     size_t host_size = reg ? reg->bits->size_bits : 0;
     uint64_t size_bits = (uint64_t)host_size;
     if ((size_t)size_bits != host_size) {
@@ -428,7 +480,9 @@ static ArAction exec_get_size(CommandContext *context) {
         exit(1);
     }
 
-    write_by_address(context->vm, context->write_ar, destination, size_bits,
+    write_by_address(context->vm,
+                     command_register_context(context, context->write_ar),
+                     destination, size_bits,
                      context->operands.pos);
     printf("[GET SIZE] reg%u -> %llu bits\n",
            source.reg_num, (unsigned long long)size_bits);
@@ -448,7 +502,7 @@ static ArAction exec_end_call(CommandContext *context) {
 
     ActivationRecord *caller = ar->prev;
     if (ar->shares_rs)
-        caller->rs_ptr = context->node.next0;
+        caller->current_node.node_index = context->node.next0;
     if (ar->shares_proc)
         caller->proc_pos = ar->proc_pos;
 
@@ -524,8 +578,10 @@ static void skip_builtin(CommandContext *context) {
 void vm_start(VM *vm, int proc_reg, int rs_reg) {
     ActivationRecord *ar = calloc(1, sizeof(ActivationRecord));
     ar->proc_reg = proc_reg;
-    ar->rs_reg = rs_reg;
-    ar->rs_ptr = 0;
+    ar->current_node.reg_num = rs_reg;
+    ar->current_node.node_index = 0;
+    ar->local_resolver.reg_num = rs_reg;
+    ar->local_resolver.node_index = DEFAULT_LOCAL_RESOLVER_NODE;
     ar->proc_pos = 0;
     ar->prev = NULL;
     vm->current_ar = ar;
@@ -544,9 +600,9 @@ void vm_step(VM *vm) {
     ActivationRecord *old_ar = vm->current_ar;
     if (!ar) { vm->halted = 1; return; }
 
-    Register *rs = vm_get_register(vm, ar->rs_reg);
-    ResolvingNetworkNode node = resolving_network_read_node(rs->bits,
-                                                            ar->rs_ptr);
+    ResolvingNetworkEntry node_entry = ar->current_node;
+    ResolvingNetworkNode node = vm_read_resolving_network_node(
+        vm, node_entry, ar->proc_pos);
 
     if (node.type != 0) {
         fprintf(stderr, "FATAL: node type %d not implemented\n", node.type);
@@ -560,7 +616,8 @@ void vm_step(VM *vm) {
         case 0:
         case 1:
         case 2:
-            context = command_context_create(vm, ar, ar, ar, node);
+            context = command_context_create(vm, ar, ar, ar, node_entry,
+                                             node);
             action = exec_builtin(&context);
         break;
         case 3:
@@ -568,19 +625,22 @@ void vm_step(VM *vm) {
             BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
             uint64_t bit = bc_read_bits(&cursor, 1);
             ar->proc_pos = cursor.pos;
-            ar->rs_ptr = resolving_network_next_node(&node, (uint8_t)bit);
+            ar->current_node = resolving_network_next_entry(
+                node_entry, &node, (uint8_t)bit);
             return;
         default:
             int should_skip = vm->has_prefix_condition && !vm->prefix_condition;
             if (should_skip) {
-                context = command_context_create(vm, ar, ar, ar, node);
+                context = command_context_create(vm, ar, ar, ar, node_entry,
+                                                 node);
                 skip_builtin(&context);
                 action = AR_NOP;
             } else {
                 ActivationRecord *prefix_read_ar = vm->prefix_read_ar ? vm->prefix_read_ar : ar;
                 ActivationRecord *prefix_write_ar = vm->prefix_write_ar ? vm->prefix_write_ar : ar;
                 context = command_context_create(
-                    vm, ar, prefix_read_ar, prefix_write_ar, node);
+                    vm, ar, prefix_read_ar, prefix_write_ar, node_entry,
+                    node);
                 action = exec_builtin(&context);
             }
             vm->prefix_read_ar = NULL;
@@ -589,47 +649,16 @@ void vm_step(VM *vm) {
             vm->has_prefix_condition = 0;
         break;
     }
-//    // CHOICE — обрабатываем отдельно (не в exec_builtin)
-//    if (node.data == 0x03) {
-//        Register *proc = vm_get_register(vm, read_ar->proc_reg);
-//        BitCursor cursor = bc_create(proc->bits, read_ar->proc_pos);
-//        uint64_t bit = bc_read_bits(&cursor, 1);
-//        read_ar->proc_pos = cursor.pos;
-//        ar->rs_ptr = resolving_network_next_node(&node, (uint8_t)bit);
-//        return;
-//    }
-//
-//    int is_prefix = node.data <= 0x02;
-//    ActivationRecord *write_ar = vm->prefix_write_ar
-//                               ? vm->prefix_write_ar : ar;
-//    CommandContext context = command_context_create(
-//        vm, read_ar, is_prefix ? ar : write_ar, node);
-//    ActivationRecord *old_ar = context.write_ar;
-//    ArAction action;
-//    if (!is_prefix && vm->has_prefix_condition && !vm->prefix_condition) {
-//        skip_builtin(&context);
-//        action = AR_NOP;
-//    } else {
-//        action = exec_builtin(&context);
-//    }
-//
-//    if (!is_prefix) {
-//        vm->prefix_read_ar = NULL;
-//        vm->prefix_write_ar = NULL;
-//        vm->prefix_condition = 0;
-//        vm->has_prefix_condition = 0;
-//    }
-
     switch (action) {
         case AR_NOP:
-                ar->rs_ptr = node.next0;
+                ar->current_node.node_index = node.next0;
             break;
         case AR_CALL:
             // CALL: caller->rs_ptr и callee уже настроены внутри
             break;
         case AR_POP:
             // END CALL: caller уже переключён внутри
-            free(old_ar);
+            activation_record_free(old_ar);
             break;
     }
 }

@@ -4,6 +4,7 @@ from pathlib import Path
 OUTPUT_DIR = Path(__file__).parent
 REG_PROCEDURE = "00"
 REG_LOCAL = "01"
+REG_SUPERLOCAL = "10"
 REG_GLOBAL = "11"
 
 
@@ -16,6 +17,12 @@ def variable_size(value):
 
 def immediate(value):
     bit_count = max(1, value.bit_length())
+    return "00" + variable_size(bit_count) + format(value, f"0{bit_count}b")
+
+
+def immediate_sized(value, bit_count):
+    if value < 0 or value >= 1 << bit_count:
+        raise ValueError("immediate does not fit requested size")
     return "00" + variable_size(bit_count) + format(value, f"0{bit_count}b")
 
 
@@ -78,8 +85,12 @@ def resize(reg_num, size_bits, reg_class=REG_GLOBAL):
     )
 
 
-def get_size(reg_num, destination):
-    return "1101" + register_selector(reg_num) + destination
+def get_size(reg_num, destination, reg_class=REG_GLOBAL):
+    return (
+        "1101"
+        + register_selector(reg_num, reg_class)
+        + destination
+    )
 
 
 def jump(position):
@@ -115,11 +126,16 @@ def procedure_with_subroutine(build_main, subroutine):
     raise RuntimeError("procedure offset did not converge")
 
 
-def make_node(data, next0, next1):
+LOCAL_RESOLVER_BASE = 128
+SUPERLOCAL_RESOLVER_BASE = 191
+
+
+def make_node(data, next0, next1, resolver=0):
     value = 0
     value |= (data & 0x7FFF) << 48
     value |= (next0 & 0xFFFF) << 32
     value |= (next1 & 0xFFFF) << 16
+    value |= resolver & 0xFFFF
     return value
 
 
@@ -139,9 +155,27 @@ def add_tree(nodes, base, commands):
         )
     for index in range(15, 31):
         nodes[base + index] = make_node(0x0B, 0, 0)
-    for command_bits, command_code in commands.items():
+    for command_bits, command in commands.items():
+        if isinstance(command, tuple):
+            command_code, resolver = command
+        else:
+            command_code, resolver = command, 0
         index = command_leaf_index(command_bits)
-        nodes[base + index] = make_node(command_code, 0, 0)
+        nodes[base + index] = make_node(command_code, 0, 0, resolver)
+
+
+def add_identity_resolver(nodes, base):
+    required_size = base + 63
+    if len(nodes) < required_size:
+        nodes.extend([0] * (required_size - len(nodes)))
+    for index in range(31):
+        nodes[base + index] = make_node(
+            0x03,
+            base + 2 * index + 1,
+            base + 2 * index + 2,
+        )
+    for name in range(32):
+        nodes[base + 31 + name] = make_node(name, 0, 0)
 
 
 def add_exact_path(nodes, base, bits, command_code, sink):
@@ -155,10 +189,13 @@ def add_exact_path(nodes, base, bits, command_code, sink):
     nodes[sink] = make_node(0x0B, 0, 0)
 
 
-def build_network(*command_sets):
+def build_network(*command_sets, superlocal=False):
     nodes = [0] * (31 * len(command_sets))
     for tree_index, commands in enumerate(command_sets):
         add_tree(nodes, tree_index * 31, commands)
+    add_identity_resolver(nodes, LOCAL_RESOLVER_BASE)
+    if superlocal:
+        add_identity_resolver(nodes, SUPERLOCAL_RESOLVER_BASE)
     return b"".join(node.to_bytes(8, "big") for node in nodes)
 
 
@@ -243,6 +280,7 @@ def generate_call_new_procedure_and_network_1000():
     )
     alternative_name = return_immediate(17) + "1011"
     add_exact_path(nodes, 31, alternative_name, 0x09, 58)
+    add_identity_resolver(nodes, LOCAL_RESOLVER_BASE)
     network = b"".join(node.to_bytes(8, "big") for node in nodes)
     write_case("call_new_procedure_and_network_1000", program, network)
 
@@ -391,7 +429,7 @@ def generate_accumulated_prefixes_compute_0000_0001():
             resize(11, 3, REG_LOCAL)
             + resize(12, 3, REG_LOCAL)
             + copy(immediate(5), direct_address(11, 0, REG_LOCAL))
-            + copy(immediate(2), direct_address(12, 0, REG_LOCAL))
+            + copy(immediate_sized(2, 3), direct_address(12, 0, REG_LOCAL))
             + "0110" + direct_address(1, inner_offset)
             + "1011"
         )
@@ -416,6 +454,21 @@ def generate_accumulated_prefixes_compute_0000_0001():
         "1100": 0x0C,
     })
     write_case("accumulated_prefixes_compute_0000_0001", program, network)
+
+
+def generate_superlocal_registers():
+    program = (
+        resize(20, 64)
+        + resize(5, 3, REG_SUPERLOCAL)
+        + get_size(5, direct_address(20, 0), REG_SUPERLOCAL)
+        + "1011"
+    )
+    network = build_network({
+        "1011": 0x0B,
+        "1100": (0x0C, SUPERLOCAL_RESOLVER_BASE),
+        "1101": (0x0D, SUPERLOCAL_RESOLVER_BASE),
+    }, superlocal=True)
+    write_case("superlocal_registers", program, network)
 
 
 def generate_write_prefix_0001():
@@ -479,6 +532,7 @@ def main():
     generate_indirect_addressing_01()
     generate_procedure_register_class_00()
     generate_accumulated_prefixes_compute_0000_0001()
+    generate_superlocal_registers()
     generate_write_prefix_0001()
     generate_conditional_prefix_0010()
 
