@@ -118,6 +118,15 @@ int main(int argc, char **argv) {
             fail(case_name, "indirect source returned unexpected bits");
         if (bc_read_bits(&cursor, 13) != UINT64_C(0x1969))
             fail(case_name, "indirect destination contains unexpected bits");
+    } else if (strcmp(case_name, "foreign_addressing_11") == 0) {
+        if (result_count != 0)
+            fail(case_name, "foreign COPY unexpectedly returned a result");
+        Register *reg20 = vm_get_register(vm, 20);
+        if (!reg20 || reg20->bits->size_bits != 3)
+            fail(case_name, "foreign COPY result register is missing");
+        BitCursor cursor = bc_create(reg20->bits, 0);
+        if (bc_read_bits(&cursor, 3) != 5)
+            fail(case_name, "foreign COPY returned unexpected bits");
     } else if (strcmp(case_name, "procedure_register_class_00") == 0) {
         if (result_count != 0)
             fail(case_name, "procedure-register COPY returned a result");

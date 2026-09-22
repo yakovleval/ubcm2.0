@@ -17,6 +17,7 @@ TEST_CASES = call_new_procedure_0110 call_new_network_0111 \
 	call_new_procedure_and_network_1000 resize_register_1100 \
 	get_register_size_1101 jump_to_position_1010 return_result_1001 \
 	copy_value_0101 indirect_addressing_01 procedure_register_class_00 \
+	foreign_addressing_11 \
 	accumulated_prefixes_compute_0000_0001 superlocal_registers \
 	write_activation_record_0001 conditional_execution_0010
 TEST_FIXTURES = $(foreach case,$(TEST_CASES),\

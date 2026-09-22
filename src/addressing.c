@@ -16,6 +16,11 @@ typedef struct {
     uint64_t immediate;
 } ResolvedRange;
 
+typedef struct {
+    BitVector *vector;
+    size_t offset;
+} ResolvedAddress;
+
 static size_t checked_size(uint64_t value, const char *what,
                            size_t stream_pos) {
     size_t result = (size_t)value;
@@ -121,6 +126,103 @@ static Register *resolve_existing_register(
     return *slot;
 }
 
+static Address address_from_simple(SimpleAddress simple) {
+    Address address = {
+        .mode = simple.mode,
+        .reg_class = simple.reg_class,
+        .reg_num = simple.reg_num,
+        .offset = simple.offset,
+        .imm = simple.imm,
+        .imm_size = simple.imm_size,
+    };
+    return address;
+}
+
+static ResolvedAddress resolve_simple_address(
+    VM *vm, RegisterResolutionContext context, SimpleAddress address,
+    size_t stream_pos) {
+    if (address.mode == ADDR_DIRECT) {
+        Register *reg = resolve_existing_register(
+            vm, context, address.reg_class, address.reg_num, stream_pos);
+        size_t offset = checked_size(address.offset, "address offset",
+                                     stream_pos);
+        if (offset > reg->bits->size_bits) {
+            fprintf(stderr, "FATAL: address out of bounds at pos=%zu\n",
+                    stream_pos);
+            exit(1);
+        }
+        ResolvedAddress resolved = {
+            .vector = reg->bits,
+            .offset = offset,
+        };
+        return resolved;
+    }
+
+    if (address.mode == ADDR_INDIRECT) {
+        Register *pointer_register = resolve_existing_register(
+            vm, context, address.reg_class, address.reg_num, stream_pos);
+        size_t pointer_offset = checked_size(
+            address.offset, "indirect address offset", stream_pos);
+        if (pointer_offset >= pointer_register->bits->size_bits) {
+            fprintf(stderr,
+                    "FATAL: indirect address out of bounds at pos=%zu\n",
+                    stream_pos);
+            exit(1);
+        }
+        BitCursor cursor = bc_create(pointer_register->bits, pointer_offset);
+        SimpleAddress target = read_simple_address(&cursor);
+        if (target.mode != ADDR_DIRECT) {
+            fprintf(stderr,
+                    "FATAL: indirect address must point to a direct "
+                    "reference at pos=%zu\n",
+                    stream_pos);
+            exit(1);
+        }
+        return resolve_simple_address(vm, context, target, stream_pos);
+    }
+
+    fprintf(stderr,
+            "FATAL: simple address mode %u must be direct or indirect "
+            "at pos=%zu\n",
+            address.mode, stream_pos);
+    exit(1);
+}
+
+static uint64_t read_foreign_depth(
+    VM *vm, RegisterResolutionContext context, SimpleAddress address,
+    size_t stream_pos) {
+    if (address.mode == ADDR_IMMEDIATE)
+        return address.imm;
+
+    ResolvedAddress resolved = resolve_simple_address(
+        vm, context, address, stream_pos);
+    if (resolved.offset >= resolved.vector->size_bits) {
+        fprintf(stderr,
+                "FATAL: foreign depth address out of bounds at pos=%zu\n",
+                stream_pos);
+        exit(1);
+    }
+    BitCursor cursor = bc_create(resolved.vector, resolved.offset);
+    return read_int(&cursor);
+}
+
+static ActivationRecord *find_foreign_ar(ActivationRecord *ar,
+                                         uint64_t depth,
+                                         size_t stream_pos) {
+    while (depth > 0 && ar) {
+        ar = ar->prev;
+        depth--;
+    }
+    if (!ar) {
+        fprintf(stderr,
+                "FATAL: foreign activation record is out of bounds "
+                "at pos=%zu\n",
+                stream_pos);
+        exit(1);
+    }
+    return ar;
+}
+
 static ResolvedRange resolve_address(VM *vm,
                                      RegisterResolutionContext context,
                                      Address address,
@@ -147,13 +249,19 @@ static ResolvedRange resolve_address(VM *vm,
             resolved.immediate = address.imm;
             return resolved;
 
-        case ADDR_DIRECT: {
-            Register *reg = resolve_existing_register(
-                vm, context, address.reg_class, address.reg_num, stream_pos);
+        case ADDR_DIRECT:
+        case ADDR_INDIRECT: {
+            SimpleAddress simple = {
+                .mode = address.mode,
+                .reg_class = address.reg_class,
+                .reg_num = address.reg_num,
+                .offset = address.offset,
+            };
+            ResolvedAddress simple_resolved = resolve_simple_address(
+                vm, context, simple, stream_pos);
             resolved.kind = RESOLVED_VECTOR;
-            resolved.vector = reg->bits;
-            resolved.offset = checked_size(address.offset, "range offset",
-                                           stream_pos);
+            resolved.vector = simple_resolved.vector;
+            resolved.offset = simple_resolved.offset;
             if (resolved.offset > resolved.vector->size_bits ||
                 resolved.size_bits >
                     resolved.vector->size_bits - resolved.offset) {
@@ -165,38 +273,28 @@ static ResolvedRange resolve_address(VM *vm,
             return resolved;
         }
 
-        case ADDR_INDIRECT: {
-            Register *pointer_register = resolve_existing_register(
-                vm, context, address.reg_class, address.reg_num,
-                stream_pos);
-            size_t pointer_offset = checked_size(
-                address.offset, "indirect address offset", stream_pos);
-            if (pointer_offset >= pointer_register->bits->size_bits) {
+        case ADDR_FOREIGN:
+        {
+            uint64_t depth = read_foreign_depth(
+                vm, context, address.foreign.depth_address, stream_pos);
+            ActivationRecord *target_ar = find_foreign_ar(
+                context.ar, depth, stream_pos);
+            SimpleAddress working = address.foreign.working_address;
+            if ((working.mode != ADDR_DIRECT &&
+                 working.mode != ADDR_INDIRECT) ||
+                working.reg_class != REG_LOCAL) {
                 fprintf(stderr,
-                        "FATAL: indirect address out of bounds at pos=%zu\n",
+                        "FATAL: foreign working address must be a direct or "
+                        "indirect local reference at pos=%zu\n",
                         stream_pos);
                 exit(1);
             }
-
-            BitCursor cursor = bc_create(pointer_register->bits,
-                                         pointer_offset);
-            Address target = read_address(&cursor);
-            if (target.mode != ADDR_DIRECT) {
-                fprintf(stderr,
-                        "FATAL: indirect address must point to a direct "
-                        "reference at pos=%zu\n",
-                        stream_pos);
-                exit(1);
-            }
-            return resolve_address(vm, context, target, size_bits,
+            RegisterResolutionContext foreign_context = context;
+            foreign_context.ar = target_ar;
+            return resolve_address(vm, foreign_context,
+                                   address_from_simple(working), size_bits,
                                    writable, stream_pos);
         }
-
-        case ADDR_FOREIGN:
-            fprintf(stderr,
-                    "FATAL: foreign addressing not implemented at pos=%zu\n",
-                    stream_pos);
-            exit(1);
 
         default:
             fprintf(stderr,

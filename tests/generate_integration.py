@@ -77,6 +77,17 @@ def indirect_source(reg_num, offset, size_bits, reg_class=REG_GLOBAL):
     )
 
 
+def foreign_address(depth_address, working_address):
+    return "11" + depth_address + working_address
+
+
+def foreign_source(depth_address, working_address, size_bits):
+    return (
+        foreign_address(depth_address, working_address)
+        + variable_size(size_bits)
+    )
+
+
 def resize(reg_num, size_bits, reg_class=REG_GLOBAL):
     return (
         "1100"
@@ -375,6 +386,70 @@ def generate_indirect_addressing_01():
     write_case("indirect_addressing_01", program, network)
 
 
+def generate_foreign_addressing_11():
+    depth_one = integer(1)
+    depth_two = integer(2)
+    depth_values = depth_one + depth_two
+    middle_offset = 0
+    inner_offset = 0
+
+    for _ in range(16):
+        root = (
+            resize(20, 3)
+            + resize(21, len(depth_values))
+            + resize(10, 3, REG_LOCAL)
+            + copy(
+                immediate_sized(int(depth_values, 2), len(depth_values)),
+                direct_address(21, 0),
+            )
+            + "0110" + direct_address(1, middle_offset)
+            + copy(
+                direct_source(10, 0, 3, REG_LOCAL),
+                direct_address(20, 0),
+            )
+            + "1011"
+        )
+        middle = (
+            resize(11, 3, REG_LOCAL)
+            + copy(immediate_sized(5, 3),
+                   direct_address(11, 0, REG_LOCAL))
+            + "0110" + direct_address(1, inner_offset)
+            + "1011"
+        )
+        inner = (
+            copy(
+                foreign_source(
+                    direct_address(21, 0),
+                    direct_address(11, 0, REG_LOCAL),
+                    3,
+                ),
+                foreign_address(
+                    direct_address(21, len(depth_one)),
+                    direct_address(10, 0, REG_LOCAL),
+                ),
+            )
+            + "1011"
+        )
+        new_middle_offset = len(root)
+        new_inner_offset = len(root) + len(middle)
+        if (new_middle_offset == middle_offset
+                and new_inner_offset == inner_offset):
+            break
+        middle_offset = new_middle_offset
+        inner_offset = new_inner_offset
+    else:
+        raise RuntimeError("foreign-addressing offsets did not converge")
+
+    program = root + middle + inner
+    network = build_network({
+        "0101": 0x05,
+        "0110": 0x06,
+        "1011": 0x0B,
+        "1100": 0x0C,
+    })
+    write_case("foreign_addressing_11", program, network)
+
+
 def generate_procedure_register_class_00():
     value_bits = "1011010010110"
     value_offset = 0
@@ -530,6 +605,7 @@ def main():
     generate_return_result_1001()
     generate_copy_value_0101()
     generate_indirect_addressing_01()
+    generate_foreign_addressing_11()
     generate_procedure_register_class_00()
     generate_accumulated_prefixes_compute_0000_0001()
     generate_superlocal_registers()

@@ -46,8 +46,8 @@ RegisterSelector read_register_selector(BitCursor *cursor) {
     return selector;
 }
 
-Address read_address(BitCursor *cursor) {
-    Address addr = {0};
+SimpleAddress read_simple_address(BitCursor *cursor) {
+    SimpleAddress addr = {0};
     addr.mode = bc_read_bits(cursor, 2);
 
     switch (addr.mode) {
@@ -66,10 +66,38 @@ Address read_address(BitCursor *cursor) {
         }
 
         case ADDR_FOREIGN:
-            // Пока не реализовано
-            fprintf(stderr, "FATAL: foreign addressing not implemented\n");
+            fprintf(stderr,
+                    "FATAL: nested foreign address at pos=%zu\n",
+                    cursor->pos - 2);
+            exit(1);
+
+        default:
+            fprintf(stderr, "FATAL: invalid addressing mode %u at pos=%zu\n",
+                    addr.mode, cursor->pos - 2);
             exit(1);
     }
+    return addr;
+}
+
+Address read_address(BitCursor *cursor) {
+    Address addr = {0};
+    size_t mode_pos = cursor->pos;
+    addr.mode = bc_read_bits(cursor, 2);
+
+    if (addr.mode == ADDR_FOREIGN) {
+        addr.foreign.depth_address = read_simple_address(cursor);
+        addr.foreign.working_address = read_simple_address(cursor);
+        return addr;
+    }
+
+    bc_seek(cursor, mode_pos);
+    SimpleAddress simple = read_simple_address(cursor);
+    addr.mode = simple.mode;
+    addr.reg_class = simple.reg_class;
+    addr.reg_num = simple.reg_num;
+    addr.offset = simple.offset;
+    addr.imm = simple.imm;
+    addr.imm_size = simple.imm_size;
     return addr;
 }
 

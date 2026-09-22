@@ -32,6 +32,21 @@ typedef struct {
     uint64_t offset;
     uint64_t imm;
     uint64_t imm_size;   // ← размер immediate в битах
+} SimpleAddress;
+
+typedef struct {
+    SimpleAddress depth_address;
+    SimpleAddress working_address;
+} ForeignAddress;
+
+typedef struct {
+    uint8_t  mode;
+    uint8_t  reg_class;
+    uint8_t  reg_num;
+    uint64_t offset;
+    uint64_t imm;
+    uint64_t imm_size;
+    ForeignAddress foreign;
 } Address;
 
 typedef struct {
@@ -53,6 +68,7 @@ void     write_variable_size(BitCursor *cursor, uint64_t value);
 
 // ===== Адреса =====
 RegisterSelector read_register_selector(BitCursor *cursor);
+SimpleAddress read_simple_address(BitCursor *cursor);
 Address  read_address(BitCursor *cursor);
 
 // ===== Целые нефиксированного размера =====
