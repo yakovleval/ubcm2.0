@@ -11,10 +11,10 @@ typedef struct {
 } RegisterContext;
 
 Register **resolve_register_slot(VM *vm, RegisterContext context,
-                                 RegisterSelector selector,
+                                 ParsedRegisterType reg_type,
                                  size_t stream_pos);
 Register *resolve_existing_register(VM *vm, RegisterContext context,
-                                    RegisterSelector selector,
+                                    ParsedRegisterType reg_type,
                                     size_t stream_pos);
 
 #endif

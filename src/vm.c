@@ -345,7 +345,7 @@ static ArAction exec_jump(CommandContext *context) {
 
 // Builtin: RESIZE (0x0C)
 static ArAction exec_resize(CommandContext *context) {
-    RegisterSelector target = read_register_selector(&context->operands);
+    ParsedRegisterType target = read_register_selector(&context->operands);
     Range size_source = read_source(&context->operands);
     command_context_commit_operands(context);
 
@@ -377,7 +377,7 @@ static ArAction exec_resize(CommandContext *context) {
 
 // Builtin: GET SIZE (0x0D)
 static ArAction exec_get_size(CommandContext *context) {
-    RegisterSelector source = read_register_selector(&context->operands);
+    ParsedRegisterType source = read_register_selector(&context->operands);
     Address destination = read_address(&context->operands);
     command_context_commit_operands(context);
 

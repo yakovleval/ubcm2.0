@@ -39,11 +39,11 @@ void write_variable_size(BitCursor *cursor, uint64_t value) {
 // Адреса
 // ============================================================
 
-RegisterSelector read_register_selector(BitCursor *cursor) {
-    RegisterSelector selector;
-    selector.reg_class = bc_read_bits(cursor, 2);
-    selector.reg_num = bc_read_bits(cursor, 5);
-    return selector;
+ParsedRegisterType read_register_selector(BitCursor *cursor) {
+    ParsedRegisterType reg_type;
+    reg_type.reg_class = bc_read_bits(cursor, 2);
+    reg_type.reg_num = bc_read_bits(cursor, 5);
+    return reg_type;
 }
 
 SimpleAddress read_simple_address(BitCursor *cursor) {
@@ -58,9 +58,9 @@ SimpleAddress read_simple_address(BitCursor *cursor) {
 
         case ADDR_INDIRECT:
         case ADDR_DIRECT: {
-            RegisterSelector selector = read_register_selector(cursor);
-            addr.reg_class = selector.reg_class;
-            addr.reg_num   = selector.reg_num;
+            ParsedRegisterType reg_type = read_register_selector(cursor);
+            addr.reg_class = reg_type.reg_class;
+            addr.reg_num   = reg_type.reg_num;
             addr.offset    = read_variable_size(cursor);
             break;
         }

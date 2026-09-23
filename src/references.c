@@ -47,11 +47,11 @@ static Address address_from_simple(SimpleAddress simple) {
 static ResolvedAddress resolve_direct_address(
     VM *vm, RegisterContext context, SimpleAddress address,
     size_t stream_pos) {
-    RegisterSelector selector = {
+    ParsedRegisterType reg_type = {
         .reg_class = address.reg_class,
         .reg_num = address.reg_num,
     };
-    Register *reg = resolve_existing_register(vm, context, selector,
+    Register *reg = resolve_existing_register(vm, context, reg_type,
                                               stream_pos);
     size_t offset = checked_size(address.offset, "address offset",
                                  stream_pos);

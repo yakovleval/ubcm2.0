@@ -132,21 +132,21 @@ static SuperlocalStorage *get_superlocal_storage(
 }
 
 Register **resolve_register_slot(VM *vm, RegisterContext context,
-                                 RegisterSelector selector,
+                                 ParsedRegisterType reg_type,
                                  size_t stream_pos) {
-    switch (selector.reg_class) {
+    switch (reg_type.reg_class) {
         case REG_PROCEDURE:
             return &vm->registers[context.ar->proc_reg];
 
         case REG_LOCAL: {
             uint16_t slot = resolve_name(vm, context.ar->local_resolver,
-                                         selector.reg_num, stream_pos);
+                                         reg_type.reg_num, stream_pos);
             return &context.ar->local_registers[slot];
         }
 
         case REG_SUPERLOCAL: {
             uint16_t slot = resolve_name(
-                vm, context.superlocal_resolver, selector.reg_num,
+                vm, context.superlocal_resolver, reg_type.reg_num,
                 stream_pos);
             SuperlocalStorage *storage = get_superlocal_storage(
                 vm, context.superlocal_owner);
@@ -154,20 +154,20 @@ Register **resolve_register_slot(VM *vm, RegisterContext context,
         }
 
         case REG_GLOBAL:
-            return &vm->registers[selector.reg_num];
+            return &vm->registers[reg_type.reg_num];
 
         default:
             fprintf(stderr,
                     "FATAL: invalid register class %u at pos=%zu\n",
-                    selector.reg_class, stream_pos);
+                    reg_type.reg_class, stream_pos);
             exit(1);
     }
 }
 
 Register *resolve_existing_register(VM *vm, RegisterContext context,
-                                    RegisterSelector selector,
+                                    ParsedRegisterType reg_type,
                                     size_t stream_pos) {
-    Register **slot = resolve_register_slot(vm, context, selector,
+    Register **slot = resolve_register_slot(vm, context, reg_type,
                                             stream_pos);
     if (!*slot) {
         fprintf(stderr, "FATAL: register not found at pos=%zu\n",

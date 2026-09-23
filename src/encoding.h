@@ -23,7 +23,7 @@
 typedef struct {
     uint8_t reg_class;
     uint8_t reg_num;
-} RegisterSelector;
+} ParsedRegisterType;
 
 typedef struct {
     uint8_t  mode;
@@ -67,7 +67,7 @@ uint64_t read_variable_size(BitCursor *cursor);
 void     write_variable_size(BitCursor *cursor, uint64_t value);
 
 // ===== Адреса =====
-RegisterSelector read_register_selector(BitCursor *cursor);
+ParsedRegisterType read_register_selector(BitCursor *cursor);
 SimpleAddress read_simple_address(BitCursor *cursor);
 Address  read_address(BitCursor *cursor);
 
