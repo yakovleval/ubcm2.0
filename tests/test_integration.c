@@ -186,6 +186,8 @@ int main(int argc, char **argv) {
             expected = 11;
         else if (strcmp(case_name, "call_new_network_0111") == 0)
             expected = 17;
+        else if (strcmp(case_name, "procedure_node_type_1") == 0)
+            expected = 37;
         else
             fail(case_name, "unknown test case");
 

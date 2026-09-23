@@ -19,7 +19,8 @@ TEST_CASES = call_new_procedure_0110 call_new_network_0111 \
 	copy_value_0101 indirect_addressing_01 procedure_register_class_00 \
 	foreign_addressing_11 \
 	accumulated_prefixes_compute_0000_0001 superlocal_registers \
-	write_activation_record_0001 conditional_execution_0010
+	write_activation_record_0001 conditional_execution_0010 \
+	procedure_node_type_1
 TEST_FIXTURES = $(foreach case,$(TEST_CASES),\
 	tests/$(case).ubc tests/$(case).rn)
 TEST_OBJ = $(DEBUG_DIR)/test_integration.o

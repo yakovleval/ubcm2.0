@@ -141,8 +141,8 @@ LOCAL_RESOLVER_BASE = 128
 SUPERLOCAL_RESOLVER_BASE = 191
 
 
-def make_node(data, next0, next1, resolver=0):
-    value = 0
+def make_node(data, next0, next1, resolver=0, node_type=0):
+    value = (node_type & 1) << 63
     value |= (data & 0x7FFF) << 48
     value |= (next0 & 0xFFFF) << 32
     value |= (next1 & 0xFFFF) << 16
@@ -168,11 +168,18 @@ def add_tree(nodes, base, commands):
         nodes[base + index] = make_node(0x0B, 0, 0)
     for command_bits, command in commands.items():
         if isinstance(command, tuple):
-            command_code, resolver = command
+            if len(command) == 2:
+                command_code, resolver = command
+                node_type = 0
+            else:
+                command_code, resolver, node_type = command
         else:
             command_code, resolver = command, 0
+            node_type = 0
         index = command_leaf_index(command_bits)
-        nodes[base + index] = make_node(command_code, 0, 0, resolver)
+        nodes[base + index] = make_node(
+            command_code, 0, 0, resolver, node_type
+        )
 
 
 def add_identity_resolver(nodes, base):
@@ -200,14 +207,30 @@ def add_exact_path(nodes, base, bits, command_code, sink):
     nodes[sink] = make_node(0x0B, 0, 0)
 
 
-def build_network(*command_sets, superlocal=False):
+def serialize_network(nodes, initial_superlocals):
+    result = bytearray(b"UBCMRN01")
+    result += len(nodes).to_bytes(8, "big")
+    result += len(initial_superlocals).to_bytes(8, "big")
+    for node in nodes:
+        result += node.to_bytes(8, "big")
+    for node_index, logical_name, bits in initial_superlocals:
+        result += node_index.to_bytes(8, "big")
+        result += logical_name.to_bytes(1, "big")
+        result += len(bits).to_bytes(8, "big")
+        result += pack_bits(bits)
+    return bytes(result)
+
+
+def build_network(
+    *command_sets, superlocal=False, initial_superlocals=()
+):
     nodes = [0] * (31 * len(command_sets))
     for tree_index, commands in enumerate(command_sets):
         add_tree(nodes, tree_index * 31, commands)
     add_identity_resolver(nodes, LOCAL_RESOLVER_BASE)
     if superlocal:
         add_identity_resolver(nodes, SUPERLOCAL_RESOLVER_BASE)
-    return b"".join(node.to_bytes(8, "big") for node in nodes)
+    return serialize_network(nodes, initial_superlocals)
 
 
 def pack_bits(bits):
@@ -221,7 +244,7 @@ def pack_bits(bits):
 def write_case(name, program, network):
     (OUTPUT_DIR / f"{name}.ubc").write_bytes(pack_bits(program))
     (OUTPUT_DIR / f"{name}.rn").write_bytes(network)
-    print(f"{name}: {len(program)} program bits, {len(network) // 8} RS nodes")
+    print(f"{name}: {len(program)} program bits, {len(network)} RN bytes")
 
 
 def generate_call_new_procedure_0110():
@@ -595,6 +618,38 @@ def generate_conditional_prefix_0010():
     write_case("conditional_execution_0010", program, network)
 
 
+def generate_procedure_node_type_1():
+    subprocedure = return_immediate(37) + "1011"
+    call_bits = "1110"
+    call_node = command_leaf_index(call_bits)
+    descriptor = (
+        format(20, "05b")
+        + format(2, "05b")
+        + format(0, "016b")
+    )
+    program = (
+        resize(20, len(subprocedure))
+        + copy(
+            immediate_sized(int(subprocedure, 2), len(subprocedure)),
+            direct_address(20, 0),
+        )
+        + call_bits
+        + "1011"
+    )
+    network = build_network(
+        {
+            "0101": 0x05,
+            "1001": 0x09,
+            "1011": 0x0B,
+            "1100": 0x0C,
+            call_bits: (0, SUPERLOCAL_RESOLVER_BASE, 1),
+        },
+        superlocal=True,
+        initial_superlocals=((call_node, 0, descriptor),),
+    )
+    write_case("procedure_node_type_1", program, network)
+
+
 def main():
     generate_call_new_procedure_0110()
     generate_call_new_network_0111()
@@ -611,6 +666,7 @@ def main():
     generate_superlocal_registers()
     generate_write_prefix_0001()
     generate_conditional_prefix_0010()
+    generate_procedure_node_type_1()
 
 
 if __name__ == "__main__":

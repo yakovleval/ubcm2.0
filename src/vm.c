@@ -4,6 +4,12 @@
 #include "references.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+#define RN_MAGIC "UBCMRN01"
+#define RN_MAGIC_SIZE 8
+#define CALL_DESCRIPTOR_REGISTER 0
+#define CALL_DESCRIPTOR_SIZE_BITS 26
 
 VM *vm_create(void) { return calloc(1, sizeof(VM)); }
 
@@ -74,8 +80,110 @@ void vm_load_procedure(VM *vm, int reg_num, const char *filename) {
     load_file_into_register(vm, reg_num, filename);
 }
 
+static uint64_t read_u64_be(FILE *file, const char *filename) {
+    unsigned char bytes[8];
+    if (fread(bytes, 1, sizeof(bytes), file) != sizeof(bytes)) {
+        fprintf(stderr, "FATAL: invalid resolving network file: %s\n",
+                filename);
+        exit(1);
+    }
+    uint64_t value = 0;
+    for (size_t index = 0; index < sizeof(bytes); index++)
+        value = (value << 8) | bytes[index];
+    return value;
+}
+
 void vm_load_rs(VM *vm, int reg_num, const char *filename) {
-    load_file_into_register(vm, reg_num, filename);
+    FILE *file = fopen(filename, "rb");
+    if (!file) {
+        fprintf(stderr, "FATAL: cannot open file: %s\n", filename);
+        exit(1);
+    }
+
+    unsigned char magic[RN_MAGIC_SIZE];
+    size_t magic_size = fread(magic, 1, sizeof(magic), file);
+    if (magic_size != sizeof(magic) ||
+        memcmp(magic, RN_MAGIC, RN_MAGIC_SIZE) != 0) {
+        fclose(file);
+        load_file_into_register(vm, reg_num, filename);
+        return;
+    }
+
+    uint64_t node_count = read_u64_be(file, filename);
+    uint64_t initializer_count = read_u64_be(file, filename);
+    if (node_count > SIZE_MAX / 64) {
+        fclose(file);
+        fprintf(stderr, "FATAL: resolving network is too large: %s\n",
+                filename);
+        exit(1);
+    }
+
+    size_t network_size_bits = (size_t)node_count * 64;
+    vm_create_register(vm, reg_num, network_size_bits);
+    Register *network = vm_get_register(vm, reg_num);
+    if (fread(network->bits->data, 1, network->bits->size, file) !=
+        network->bits->size) {
+        fclose(file);
+        fprintf(stderr, "FATAL: invalid resolving network nodes: %s\n",
+                filename);
+        exit(1);
+    }
+
+    for (uint64_t index = 0; index < initializer_count; index++) {
+        uint64_t node_index = read_u64_be(file, filename);
+        int logical_name = fgetc(file);
+        uint64_t size_bits = read_u64_be(file, filename);
+        size_t initializer_size = (size_t)size_bits;
+        if (logical_name < 0 || logical_name >= 32 ||
+            node_index >= node_count ||
+            (uint64_t)initializer_size != size_bits) {
+            fclose(file);
+            fprintf(stderr,
+                    "FATAL: invalid superlocal initializer in %s\n",
+                    filename);
+            exit(1);
+        }
+
+        ResolvingNetworkEntry owner = {
+            .reg_num = reg_num,
+            .node_index = node_index,
+        };
+        ResolvingNetworkNode node = vm_read_resolving_network_node(
+            vm, owner, 0);
+        RegisterContext context = {
+            .ar = NULL,
+            .superlocal_owner = owner,
+            .superlocal_resolver = {
+                .reg_num = reg_num,
+                .node_index = node.resolver,
+            },
+        };
+        ParsedRegisterType reg_type = {
+            .reg_class = REG_SUPERLOCAL,
+            .reg_num = (uint8_t)logical_name,
+        };
+        Register **slot = resolve_register_slot(vm, context, reg_type, 0);
+        vm_resize_register_slot(slot, initializer_size);
+        size_t initializer_bytes = initializer_size / 8 +
+                                   (initializer_size % 8 != 0);
+        if (initializer_bytes > 0 &&
+            fread((*slot)->bits->data, 1, initializer_bytes, file) !=
+                initializer_bytes) {
+            fclose(file);
+            fprintf(stderr,
+                    "FATAL: invalid superlocal initializer data in %s\n",
+                    filename);
+            exit(1);
+        }
+    }
+
+    if (fgetc(file) != EOF) {
+        fclose(file);
+        fprintf(stderr, "FATAL: trailing data in resolving network: %s\n",
+                filename);
+        exit(1);
+    }
+    fclose(file);
 }
 
 static CommandContext command_context_create(VM *vm,
@@ -491,6 +599,60 @@ static void skip_builtin(CommandContext *context) {
     command_context_commit_operands(context);
 }
 
+static ArAction exec_procedure_node(
+    VM *vm, ActivationRecord *caller, ResolvingNetworkEntry node_entry,
+    ResolvingNetworkNode node) {
+    RegisterContext context = {
+        .ar = caller,
+        .superlocal_owner = node_entry,
+        .superlocal_resolver = {
+            .reg_num = node_entry.reg_num,
+            .node_index = node.resolver,
+        },
+    };
+    ParsedRegisterType reg_type = {
+        .reg_class = REG_SUPERLOCAL,
+        .reg_num = CALL_DESCRIPTOR_REGISTER,
+    };
+    Register *descriptor = resolve_existing_register(
+        vm, context, reg_type, caller->proc_pos);
+    if (descriptor->bits->size_bits < CALL_DESCRIPTOR_SIZE_BITS) {
+        fprintf(stderr,
+                "FATAL: procedure-node descriptor is too small at pos=%zu\n",
+                (size_t)caller->proc_pos);
+        exit(1);
+    }
+
+    BitCursor cursor = bc_create(descriptor->bits, 0);
+    int proc_reg = (int)bc_read_bits(&cursor, 5);
+    int rs_reg = (int)bc_read_bits(&cursor, 5);
+    uint64_t rs_entry = bc_read_bits(&cursor, 16);
+    if (!vm_get_register(vm, proc_reg)) {
+        fprintf(stderr,
+                "FATAL: procedure-node register %d not found at pos=%zu\n",
+                proc_reg, (size_t)caller->proc_pos);
+        exit(1);
+    }
+    if (!vm_get_register(vm, rs_reg)) {
+        fprintf(stderr,
+                "FATAL: procedure-node resolving network register %d "
+                "not found at pos=%zu\n",
+                rs_reg, (size_t)caller->proc_pos);
+        exit(1);
+    }
+
+    caller->current_node.node_index = node.next0;
+    ActivationRecord *callee = calloc(1, sizeof(ActivationRecord));
+    callee->proc_reg = proc_reg;
+    callee->proc_pos = 0;
+    callee->current_node.reg_num = rs_reg;
+    callee->current_node.node_index = rs_entry;
+    callee->local_resolver = caller->local_resolver;
+    callee->prev = caller;
+    vm->current_ar = callee;
+    return AR_CALL;
+}
+
 void vm_start(VM *vm, int proc_reg, int rs_reg) {
     ActivationRecord *ar = calloc(1, sizeof(ActivationRecord));
     ar->proc_reg = proc_reg;
@@ -520,50 +682,65 @@ void vm_step(VM *vm) {
     ResolvingNetworkNode node = vm_read_resolving_network_node(
         vm, node_entry, ar->proc_pos);
 
-    if (node.type != 0) {
-        fprintf(stderr, "FATAL: node type %d not implemented\n", node.type);
-        vm->halted = 1;
-        return;
-    }
-
     ArAction action;
     CommandContext context;
-    switch (node.data) {
-        case 0:
-        case 1:
-        case 2:
-            context = command_context_create(vm, ar, ar, ar, node_entry,
-                                             node);
-            action = exec_builtin(&context);
-        break;
-        case 3:
-            Register *proc = vm_get_register(vm, ar->proc_reg);
-            BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
-            uint64_t bit = bc_read_bits(&cursor, 1);
-            ar->proc_pos = cursor.pos;
-            ar->current_node = resolving_network_next_entry(
-                node_entry, &node, (uint8_t)bit);
-            return;
-        default:
-            int should_skip = vm->has_prefix_condition && !vm->prefix_condition;
-            if (should_skip) {
-                context = command_context_create(vm, ar, ar, ar, node_entry,
-                                                 node);
-                skip_builtin(&context);
-                action = AR_NOP;
-            } else {
-                ActivationRecord *prefix_read_ar = vm->prefix_read_ar ? vm->prefix_read_ar : ar;
-                ActivationRecord *prefix_write_ar = vm->prefix_write_ar ? vm->prefix_write_ar : ar;
-                context = command_context_create(
-                    vm, ar, prefix_read_ar, prefix_write_ar, node_entry,
-                    node);
-                action = exec_builtin(&context);
-            }
+    if (node.type == 1) {
+        int should_skip = vm->has_prefix_condition && !vm->prefix_condition;
+        if (should_skip) {
+            ar->current_node.node_index = node.next0;
             vm->prefix_read_ar = NULL;
             vm->prefix_write_ar = NULL;
             vm->prefix_condition = 0;
             vm->has_prefix_condition = 0;
-        break;
+            return;
+        }
+        action = exec_procedure_node(vm, ar, node_entry, node);
+        vm->prefix_read_ar = NULL;
+        vm->prefix_write_ar = NULL;
+        vm->prefix_condition = 0;
+        vm->has_prefix_condition = 0;
+    } else {
+        switch (node.data) {
+            case 0:
+            case 1:
+            case 2:
+                context = command_context_create(vm, ar, ar, ar, node_entry,
+                                                 node);
+                action = exec_builtin(&context);
+                break;
+            case 3: {
+                Register *proc = vm_get_register(vm, ar->proc_reg);
+                BitCursor cursor = bc_create(proc->bits, ar->proc_pos);
+                uint64_t bit = bc_read_bits(&cursor, 1);
+                ar->proc_pos = cursor.pos;
+                ar->current_node = resolving_network_next_entry(
+                    node_entry, &node, (uint8_t)bit);
+                return;
+            }
+            default: {
+                int should_skip = vm->has_prefix_condition &&
+                                  !vm->prefix_condition;
+                if (should_skip) {
+                    context = command_context_create(
+                        vm, ar, ar, ar, node_entry, node);
+                    skip_builtin(&context);
+                    action = AR_NOP;
+                } else {
+                    ActivationRecord *read_ar = vm->prefix_read_ar
+                                              ? vm->prefix_read_ar : ar;
+                    ActivationRecord *write_ar = vm->prefix_write_ar
+                                               ? vm->prefix_write_ar : ar;
+                    context = command_context_create(
+                        vm, ar, read_ar, write_ar, node_entry, node);
+                    action = exec_builtin(&context);
+                }
+                vm->prefix_read_ar = NULL;
+                vm->prefix_write_ar = NULL;
+                vm->prefix_condition = 0;
+                vm->has_prefix_condition = 0;
+                break;
+            }
+        }
     }
     switch (action) {
         case AR_NOP:
