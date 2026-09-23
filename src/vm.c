@@ -265,12 +265,24 @@ static ArAction exec_conditional_prefix(CommandContext *context) {
     return AR_NOP;
 }
 
+static uint64_t integer_power(uint64_t base, uint64_t exponent) {
+    uint64_t result = 1;
+    while (exponent > 0) {
+        if (exponent & 1)
+            result *= base;
+        base *= base;
+        exponent >>= 1;
+    }
+    return result;
+}
+
 // Builtin: COMPUTE (0x04)
 static ArAction exec_compute(CommandContext *context) {
-    uint64_t opcode = bc_read_bits(&context->operands, 5);
-    // TODO: не все операции принимают два операнда, доработать для 1-арных операций
+    uint8_t opcode = (uint8_t)bc_read_bits(&context->operands, 5);
     Range src1 = read_source(&context->operands);
-    Range src2 = read_source(&context->operands);
+    Range src2 = {0};
+    if (opcode < 16)
+        src2 = read_source(&context->operands);
     Address dst = read_address(&context->operands);
     command_context_commit_operands(context);
 
@@ -280,25 +292,63 @@ static ArAction exec_compute(CommandContext *context) {
         context, context->write_ar);
     uint64_t v1 = read_range(context->vm, read_context, src1,
                              context->operands.pos);
-    uint64_t v2 = read_range(context->vm, read_context, src2,
-                             context->operands.pos);
+    uint64_t v2 = 0;
+    if (opcode < 16) {
+        v2 = read_range(context->vm, read_context, src2,
+                        context->operands.pos);
+    }
+
     uint64_t result = 0;
+    uint64_t result_size = src1.size_bits;
+    if (opcode < 8 && src2.size_bits > result_size)
+        result_size = src2.size_bits;
+
     switch (opcode) {
         case 0: result = v1 + v2; break;
         case 1: result = v1 - v2; break;
         case 2: result = v1 * v2; break;
-        case 3: result = v2 ? v1 / v2 : 0; break;
+        case 3:
+            if (v2 == 0) {
+                fprintf(stderr, "FATAL: division by zero at pos=%zu\n",
+                        context->operands.pos);
+                exit(1);
+            }
+            result = v1 / v2;
+            break;
+        case 4:
+            if (v2 == 0) {
+                fprintf(stderr, "FATAL: remainder by zero at pos=%zu\n",
+                        context->operands.pos);
+                exit(1);
+            }
+            result = v1 % v2;
+            break;
+        case 5: result = integer_power(v1, v2); break;
+        case 6: result = v1 & v2; break;
+        case 7: result = v1 | v2; break;
+        case 8: result = v1 == v2; result_size = 1; break;
+        case 9: result = v1 != v2; result_size = 1; break;
+        case 10: result = v1 > v2; result_size = 1; break;
+        case 11: result = v1 >= v2; result_size = 1; break;
+        case 12: result = v1 < v2; result_size = 1; break;
+        case 13: result = v1 <= v2; result_size = 1; break;
+        case 14: result = v1 != 0 && v2 != 0; result_size = 1; break;
+        case 15: result = v1 != 0 || v2 != 0; result_size = 1; break;
+        case 22: result = v1 == 0; result_size = 1; break;
+        case 23: result = ~v1; break;
+        default:
+            fprintf(stderr,
+                    "FATAL: floating-point COMPUTE opcode %u is not "
+                    "implemented at pos=%zu\n",
+                    opcode, context->operands.pos);
+            exit(1);
     }
 
-    uint64_t rsize = src1.size_bits > src2.size_bits
-                   ? src1.size_bits : src2.size_bits;
-    write_range(context->vm, write_context, dst, result, rsize,
+    write_range(context->vm, write_context, dst, result, result_size,
                 context->operands.pos);
 
-    printf("[COMPUTE] op=%llu -> reg%d[%llu] = %llu (size=%llu)\n",
-           (unsigned long long)opcode, dst.reg_num,
-           (unsigned long long)dst.offset,
-           (unsigned long long)result, (unsigned long long)rsize);
+    printf("[COMPUTE] op=%u, size=%llu\n", opcode,
+           (unsigned long long)result_size);
     return AR_NOP;
 }
 
@@ -560,11 +610,14 @@ static ArAction exec_builtin(CommandContext *context) {
 static void skip_builtin(CommandContext *context) {
     switch (context->node.data) {
         case 0x04:
-            (void)bc_read_bits(&context->operands, 5);
+        {
+            uint64_t opcode = bc_read_bits(&context->operands, 5);
             (void)read_source(&context->operands);
-            (void)read_source(&context->operands);
+            if (opcode < 16)
+                (void)read_source(&context->operands);
             (void)read_address(&context->operands);
             break;
+        }
         case 0x05:
             (void)read_source(&context->operands);
             (void)read_address(&context->operands);

@@ -122,6 +122,15 @@ def compute(opcode, source1, source2, destination):
     )
 
 
+def compute_unary(opcode, source, destination):
+    return (
+        "0100"
+        + format(opcode, "05b")
+        + source
+        + destination
+    )
+
+
 def return_immediate(value):
     return "1001" + immediate(value)
 
@@ -650,6 +659,42 @@ def generate_procedure_node_type_1():
     write_case("procedure_node_type_1", program, network)
 
 
+def generate_integer_compute_0100():
+    program = resize(20, 81)
+    offset = 0
+    for opcode in range(8):
+        program += compute(
+            opcode,
+            immediate_sized(13, 8),
+            immediate_sized(3, 8),
+            direct_address(20, offset),
+        )
+        offset += 8
+    for opcode in range(8, 16):
+        program += compute(
+            opcode,
+            immediate_sized(13, 8),
+            immediate_sized(3, 8),
+            direct_address(20, offset),
+        )
+        offset += 1
+    program += compute_unary(
+        22, immediate_sized(0, 8), direct_address(20, offset)
+    )
+    offset += 1
+    program += compute_unary(
+        23, immediate_sized(13, 8), direct_address(20, offset)
+    )
+    program += "1011"
+
+    network = build_network({
+        "0100": 0x04,
+        "1011": 0x0B,
+        "1100": 0x0C,
+    })
+    write_case("integer_compute_0100", program, network)
+
+
 def main():
     generate_call_new_procedure_0110()
     generate_call_new_network_0111()
@@ -667,6 +712,7 @@ def main():
     generate_write_prefix_0001()
     generate_conditional_prefix_0010()
     generate_procedure_node_type_1()
+    generate_integer_compute_0100()
 
 
 if __name__ == "__main__":

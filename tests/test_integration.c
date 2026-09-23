@@ -51,6 +51,34 @@ static void check_get_size(VM *vm, const char *case_name) {
         fail(case_name, "GET SIZE returned a nonzero missing-register size");
 }
 
+static void check_integer_compute(VM *vm, const char *case_name) {
+    static const uint64_t arithmetic[] = {
+        16, 10, 39, 4, 1, 149, 1, 15,
+    };
+    static const uint64_t boolean[] = {
+        0, 1, 1, 1, 0, 0, 1, 1,
+    };
+    Register *reg = vm_get_register(vm, 20);
+    if (!reg || reg->bits->size_bits != 81)
+        fail(case_name, "COMPUTE result register is invalid");
+
+    BitCursor cursor = bc_create(reg->bits, 0);
+    for (size_t index = 0;
+         index < sizeof(arithmetic) / sizeof(arithmetic[0]); index++) {
+        if (bc_read_bits(&cursor, 8) != arithmetic[index])
+            fail(case_name, "arithmetic COMPUTE result is invalid");
+    }
+    for (size_t index = 0;
+         index < sizeof(boolean) / sizeof(boolean[0]); index++) {
+        if (bc_read_bits(&cursor, 1) != boolean[index])
+            fail(case_name, "boolean COMPUTE result is invalid");
+    }
+    if (bc_read_bits(&cursor, 1) != 1)
+        fail(case_name, "logical NOT result is invalid");
+    if (bc_read_bits(&cursor, 8) != 242)
+        fail(case_name, "bitwise NOT result is invalid");
+}
+
 int main(int argc, char **argv) {
     if (argc != 4) {
         fprintf(stderr,
@@ -107,6 +135,10 @@ int main(int argc, char **argv) {
         if (result_count != 0)
             fail(case_name, "COPY unexpectedly returned a CALL result");
         check_copy(vm, case_name);
+    } else if (strcmp(case_name, "integer_compute_0100") == 0) {
+        if (result_count != 0)
+            fail(case_name, "COMPUTE unexpectedly returned a result");
+        check_integer_compute(vm, case_name);
     } else if (strcmp(case_name, "indirect_addressing_01") == 0) {
         if (result_count != 0)
             fail(case_name, "indirect COPY unexpectedly returned a result");
